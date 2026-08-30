@@ -1,0 +1,138 @@
+// Package trading is the orchestration layer between the CLI and the venue. It
+// applies tape's sanity rules before an order leaves the machine, submits it, and
+// keeps the journal in step with the broker.
+package trading
+
+import (
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/trapp01/tape/internal/broker"
+	"github.com/trapp01/tape/internal/costs"
+	"github.com/trapp01/tape/internal/journal"
+)
+
+const (
+	defaultPollWindow   = 5 * time.Second
+	defaultPollInterval = 200 * time.Millisecond
+)
+
+// Deps are an Engine's collaborators. Broker, Data and Journal are required.
+type Deps struct {
+	Broker  broker.Broker
+	Data    broker.MarketData
+	Journal *journal.Store
+	Costs   costs.Model
+	// Mode is "paper" or "live"; every journal row is tagged with it.
+	Mode string
+	// Loc is the zone day boundaries are measured in. Nil means time.Local.
+	Loc *time.Location
+	// Now is the clock used for journal timestamps. Nil means time.Now.
+	Now func() time.Time
+	// PollWindow bounds how long Submit and Flatten wait for fills. Zero means 5s.
+	PollWindow time.Duration
+	// PollInterval is the gap between GetOrder calls. Zero means 200ms.
+	PollInterval time.Duration
+}
+
+// Engine owns every write that crosses the broker and the journal together.
+type Engine struct {
+	broker       broker.Broker
+	data         broker.MarketData
+	jnl          *journal.Store
+	costs        costs.Model
+	mode         string
+	loc          *time.Location
+	now          func() time.Time
+	pollWindow   time.Duration
+	pollInterval time.Duration
+}
+
+// Result is one submission: the journal row, the venue's order, and the fills
+// recorded while waiting for it to settle.
+type Result struct {
+	Order       journal.Order
+	BrokerOrder broker.Order
+	Fills       []journal.Fill
+}
+
+// SyncReport is what one reconciliation pass changed.
+type SyncReport struct {
+	Checked int
+	Updated []journal.Order
+	Fills   []journal.Fill
+	// Missing are journal orders the venue no longer knows about.
+	Missing []string
+}
+
+// FlattenReport is the end-of-day sweep. StillOpen and Problems both mean the
+// sweep did not finish and the caller must say so.
+type FlattenReport struct {
+	Canceled  []string
+	Orders    []journal.Order
+	Fills     []journal.Fill
+	StillOpen []broker.Position
+	Problems  []string
+}
+
+// PositionView joins tape's cost basis with the venue's current price. Priced is
+// false when neither the broker nor the feed had a price for the symbol.
+type PositionView struct {
+	Symbol        string
+	Qty           int
+	AvgEntryPrice float64
+	CostBasis     float64
+	CurrentPrice  float64
+	MarketValue   float64
+	UnrealizedPL  float64
+	UnrealizedPct float64
+	OpenedAt      time.Time
+	Priced        bool
+}
+
+func New(d Deps) (*Engine, error) {
+	if d.Broker == nil {
+		return nil, errors.New("trading: new engine: broker is nil")
+	}
+	if d.Data == nil {
+		return nil, errors.New("trading: new engine: market data is nil")
+	}
+	if d.Journal == nil {
+		return nil, errors.New("trading: new engine: journal is nil")
+	}
+	if d.Mode != journal.ModePaper && d.Mode != journal.ModeLive {
+		return nil, fmt.Errorf("trading: new engine: mode must be %q or %q, got %q", journal.ModePaper, journal.ModeLive, d.Mode)
+	}
+
+	e := &Engine{
+		broker:       d.Broker,
+		data:         d.Data,
+		jnl:          d.Journal,
+		costs:        d.Costs,
+		mode:         d.Mode,
+		loc:          d.Loc,
+		now:          d.Now,
+		pollWindow:   d.PollWindow,
+		pollInterval: d.PollInterval,
+	}
+	if e.loc == nil {
+		e.loc = time.Local
+	}
+	if e.now == nil {
+		e.now = time.Now
+	}
+	if e.pollWindow <= 0 {
+		e.pollWindow = defaultPollWindow
+	}
+	if e.pollInterval <= 0 {
+		e.pollInterval = defaultPollInterval
+	}
+	return e, nil
+}
+
+// Mode is "paper" or "live".
+func (e *Engine) Mode() string { return e.mode }
+
+// Location is the zone the engine measures trading days in.
+func (e *Engine) Location() *time.Location { return e.loc }

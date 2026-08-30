@@ -1,0 +1,244 @@
+# Design
+
+This is the reasoning behind tape: what the evidence says about day trading, what that evidence
+forced into the design, and what I chose not to build. The README covers what the tool does. This
+document covers why it is shaped the way it is.
+
+The bet behind the repo: **a trading assistant that never predicts, only applies written rules and
+grades itself, is worth more than one that claims to know where the market is going.** The second
+kind has no evidence behind it. The first kind produces the one thing a beginner cannot get any
+other way: an honest record.
+
+---
+
+## The premise, tested
+
+I came to this the way most people do. Trading movies, Gary Stevenson's _The Trading Game_, the
+feeling that the whole thing is about information and that an AI might be the best information
+collector I could get. Before writing code I went looking for what the research actually says, and
+most of the original premise did not survive.
+
+**Retail day traders lose, and the studies are unusually complete.** Barber, Lee, Liu and Odean had
+every trade on the Taiwan Stock Exchange from 1992 to 2006. Under one percent of day traders were
+predictably profitable after fees. Chague, De-Losso and Giovannetti followed 19,646 new Brazilian
+futures day traders. Of the ones who stuck with it for 300 or more sessions, 97% lost money and
+1.1% earned more than minimum wage. Persistence made outcomes worse, not better.
+
+**An LLM picking trades does not change that number.** The flashy results (a multi-agent paper
+claiming a 6 to 25 percent edge) come from three-month backtests on a handful of tech stocks where
+the model had been pretrained on the very news it was "predicting". FINSABER re-ran LLM timing
+strategies across two decades and over a hundred symbols with survivorship and data-snooping
+controls, and the advantage evaporated: too conservative in bull markets, too aggressive in bear
+markets. When six frontier models were each handed real money on crypto perpetuals in late 2025,
+most of them drew down hard from over-leveraging, and the dispersion between them looked like coin
+flips with leverage, not skill.
+
+**Speed is not available to a person at a laptop.** Firms hold co-located servers, sub-millisecond
+round trips, and, through payment for order flow, wholesalers see retail orders before the market
+does. "React to news faster" is not a feature a retail tool can honestly offer.
+
+What does have evidence behind it is duller: position sizing, forced journaling, pre-trade rule
+checks, and vetoing impulsive trades. That is loss reduction, not alpha. It is also exactly the
+category that trade-journaling products already charge for, which told me the journal is the
+product, not the AI.
+
+The Stevenson reframe, for what it's worth: his edge was a macro thesis nobody else believed, held
+with patience and sized with conviction. The transferable lesson is not "get information faster".
+It is "know exactly why you're in a trade and what would make you wrong". That is a journaling
+discipline, and tape enforces it.
+
+## What the evidence forced
+
+| Evidence | What it forced |
+| --- | --- |
+| 97% of persistent day traders lose; under 1% reliably profitable | Paper money first. Quantitative gates before any real dollar. Success is defined so that "you have no edge" still counts as the project working. |
+| LLM trade-picking edge disappears in de-biased long-horizon tests | The model never _predicts_. It applies written playbook rules to today's data and cites which rule fired. Its calls are still scored, so if predictive value exists it shows up in numbers rather than vibes. |
+| Unsupervised LLM agents drift into oversized, concentrated bets | Co-pilot, not autopilot. A human confirms every order. Risk limits live in Go code the model cannot override or argue with. |
+| Retail cannot win on speed | No news-reaction features. The only edges attempted are preparation, selectivity, sizing discipline, and an honest record. |
+| Journaling and analytics is a category people pay for | The journal and stats engine is the load-bearing feature. Everything else is built on top of it. |
+| OpenBB, the best open-source research terminal, nearly died maintaining 500 data-vendor wrappers | Few providers, every one behind a Go interface. Replacing a dead vendor is one adapter file. |
+
+## The two loops
+
+There is a morning loop and a learning loop, and the second one is the reason this is more than a
+chat wrapper.
+
+**Morning.** Market data comes in (quotes, movers, news, the economic and earnings calendars). The
+model produces a briefing: market state, regime, what the calendar is about to do, and a falsifiable
+call of the day. It proposes zero to three trades, each tied to a named rule in the playbook and
+each carrying its stop, target, and size before it carries anything else. You take or pass. Taken
+orders go to the broker. Everything, including the passes and the reason for each pass, goes into
+the journal.
+
+**Learning.** Nightly, the journal is scored against what actually happened: fills and P&L for
+taken trades, counterfactual outcomes for passed proposals, right-or-wrong for the briefing's call
+of the day. Weekly, the model reads its own scored record and proposes diffs to `playbook.md`. You
+review those diffs like a pull request. The playbook constrains the next morning's briefing.
+
+That last edge, playbook to briefing, is the only way strategy changes. The model does not
+improvise. It applies rules, and the rules evolve only through scored history that you approved.
+
+The detail most journals miss is on the pass side. If you veto a proposal and it would have made
+money, that is recorded. If the model proposes something you decline and it would have lost, that is
+recorded too. Over months this answers a question no amount of reading can: are your vetoes helping
+or hurting?
+
+## Co-pilot rules
+
+These are enforced in code, not in prompts, because a prompt is a suggestion and a type system is
+a wall.
+
+- **No order without confirmation.** The model can propose. Only `tape take` transmits.
+- **Risk limits are Go.** Per-trade risk capped at a small fraction of the account, a cap on open
+  positions, no averaging down, flat by close, and a daily halt after two stopped-out losses. The
+  model has no code path around any of them.
+- **Every proposal carries its exit before its entry.** Stop, target, and size are required by the
+  schema. A proposal without them is rejected before a human sees it.
+- **Every briefing makes falsifiable calls.** Direction for the day, a thesis per setup, a condition
+  that would invalidate it. Nothing so vague it cannot be wrong.
+
+## Architecture
+
+```
+cmd/tape             the binary
+internal/cli         cobra commands: thin, one function call each
+internal/config      ~/.tape/config.toml, env overrides for secrets
+internal/broker      Broker + MarketData interfaces; alpaca/ is the paper adapter
+internal/journal     SQLite: orders, fills, round-trip trades, ledger, day recap
+internal/costs       slippage, commission, and regulatory-fee model applied to every fill
+internal/llm         Provider interface; native Anthropic plus one OpenAI-compatible client
+internal/trading     orchestration: submit, sync fills, flatten
+```
+
+**Go for the tool, Python for research.** Go gives a single static binary, a maintained official
+Alpaca SDK, and the concurrency a quote stream wants. What Go does not have is a research stack:
+there is no pandas, no vectorbt or backtrader-class portfolio backtester with walk-forward and
+realistic fills, and every piece of prior art in this space is Python. So the tool you touch is
+Go, and when a backtest is ten times easier in Python, a sidecar script is permitted. The rule is
+that you never have to know it is there.
+
+**One SQLite file.** Briefings, proposals, decisions, fills, and scores all live in `~/.tape/tape.db`.
+Trivial to back up, trivial to query, trivial to hand to the Python sidecar. Stats are computed from
+this file and never from the broker, because the broker's numbers do not include the cost model or
+the ledger size you actually care about.
+
+**The broker is an interface.** `broker.Broker` covers account, positions, orders, and flattening.
+`broker.MarketData` covers quotes and streams. The paper adapter is Alpaca. A live adapter is a new
+package behind the same interface, and the CLI does not change. This seam is the whole reason
+"paper first, real money later" is a real path rather than a rewrite.
+
+**The strategy is a markdown file in git.** `playbook.md` is human-readable, diffable, and versioned.
+Every change to it is a commit, which means the strategy has a history you can line up against the
+stats. When the model proposes a rule change, the diff is the proposal.
+
+## Any model, one interface
+
+The LLM layer is provider-agnostic on purpose. `llm.Provider` is a single `Complete` call that takes
+a system prompt, messages, and an optional JSON schema, and returns text plus token counts. Three
+implementations exist:
+
+- **Anthropic, native**, through the official Go SDK.
+- **OpenAI-compatible**, one client with a configurable base URL and named presets: OpenRouter,
+  Z.ai (GLM) direct, DeepSeek, OpenAI, Groq, and a local Ollama. A custom base URL covers anything
+  else that speaks the chat-completions shape.
+- **Claude Code**, which shells out to the locally installed CLI in headless mode so development
+  runs on your own subscription instead of API credits; personal use on your own machine only, since
+  Anthropic does not permit offering a claude.ai login to third parties (see `docs/models.md`).
+
+The reason is the learning loop. If every proposal and every briefing call is scored, then swapping
+the model behind the briefing and comparing the scores is a real experiment instead of an opinion.
+The journal records which model produced each proposal so those comparisons are possible later.
+
+## Paper fills lie
+
+A paper venue fills you at the quote with no commission, no slippage, and no queue. A small account
+trading through a real broker does not get any of that, and the difference is large enough to flip a
+strategy from positive to negative expectancy.
+
+So tape applies a cost model to every fill before it enters the journal: slippage against you in
+basis points, a per-share commission with a minimum and a percentage cap that mirrors IBKR Pro
+pricing, and the SEC and FINRA fees a real sell incurs. The fill the broker reported is kept as the
+raw price; the modeled price is what the stats use. This is the honesty layer, and it went in
+first.
+
+The ledger has the same problem. Alpaca hands out a hundred thousand dollars of paper money, which
+tells you nothing about how you would behave with an account you could actually fund. Tape's ledger
+starts at the equity you configure and computes cash, P&L, and position sizing from its own fills.
+The broker's balance is ignored.
+
+## Phases and the gate
+
+0. **Plumbing.** Config, broker adapter, journal, cost model, LLM layer, manual paper orders end to
+   end.
+1. **The briefing.** Data collectors behind provider interfaces, `tape brief` with a scored call of
+   the day, before any trade proposals exist.
+2. **Co-pilot.** A first playbook, schema-validated proposals, take and pass with reasons, the
+   Go-enforced guardrails.
+3. **The mirror.** Nightly scoring including counterfactuals, `tape stats`, weekly `tape retro` with
+   playbook diffs. Then the actual experiment: three or more months of real mornings on paper.
+
+Between three and four sits the gate. No real money moves until every box ticks:
+
+- Three or more months and fifty or more sessions through the full system
+- Positive expectancy after modeled slippage and commissions
+- Profit factor of 1.3 or better, maximum drawdown of 10% or less
+- Zero guardrail breaches in the final month
+- The stats identify _which_ playbook rules carry the edge. Funding a mystery is gambling.
+
+4. **Real money**, only if the gate opens. A live adapter behind the existing interface, a small
+   account, the same guardrails and the same journal. Live results will be worse than paper; the
+   gate's margins exist partly to absorb that, and the gate can close again.
+
+If the gate never opens, phase four never runs, and the project still did its job.
+
+## What I cut
+
+**Full autonomy.** Deferred, not rejected. The evidence on unsupervised LLM trading agents is
+consistent: they concentrate, over-leverage, and blow up. Autonomy is something the record can earn
+one guardrail at a time, not something the first version assumes.
+
+**"The AI tells me where the market is going" as the product.** Kept only as a scored experiment,
+the call of the day. If it turns out to have predictive value, the stats will say so. Building on
+that assumption would mean building on the one claim the evidence rejects.
+
+**Options, crypto, and shorting in the first version.** Options are where beginners lose fastest
+and they multiply every mistake. Crypto has thin qualitative information and never closes, which
+fights a morning routine. Shorting is one more way to be wrong while learning. All three fit behind
+the same interfaces later.
+
+**An MCP server as the delivery vehicle.** A standalone CLI is the right shape for a ritual that
+happens at the same time every morning. Exposing the journal over MCP so other tools can query the
+record is a nice later addition, not the foundation.
+
+## Non-goals
+
+- Beating the market. The tool's job is to find out, cheaply and honestly, whether the person using
+  it has an edge. "No" is a valid and useful answer.
+- Financial advice. Nothing here is a recommendation. It is an engineering plan for measuring
+  something.
+- High-frequency anything. If a strategy needs the first hundred milliseconds after a print, it
+  needs different hardware and a different life.
+- Supporting every broker and every data vendor. Few adapters, well-tested, replaceable.
+
+If you are in Canada: not in a TFSA (a trading business inside one is taxed on the whole thing),
+frequent trading gains are business income, and IBKR is the practical broker with real API order
+entry. If you are in the US, the pattern-day-trader rule was retired in 2026 and replaced by
+risk-based intraday margin; check your broker's current policy.
+
+## Sources
+
+- Barber, Lee, Liu and Odean, day trading on the Taiwan Stock Exchange; Chague, De-Losso and
+  Giovannetti, Brazilian day traders. Summary with figures:
+  https://www.currentmarketvaluation.com/posts/the-data-on-day-trading.php
+- FINSABER, LLM timing strategies over two decades: https://arxiv.org/abs/2505.07078
+- TradingAgents (the multi-agent paper and its limits): https://arxiv.org/abs/2412.20138
+- TradeTrap, stress-testing LLM trading agents: https://arxiv.org/abs/2512.02261
+- Alpha Arena, frontier models with real money: https://nof1.ai/
+- Payment for order flow: https://en.wikipedia.org/wiki/Payment_for_order_flow
+- OpenBB's terminal sunset and open-sourcing:
+  https://openbb.co/blog/sunsetting-openbb-terminal-why-how-and-what-now/ and
+  https://openbb.co/blog/openbb-belongs-to-everyone/
+- FINRA on the retired pattern-day-trader rule:
+  https://www.finra.org/rules-guidance/notices/26-10
+- Alpaca paper trading: https://docs.alpaca.markets/docs/paper-trading
+- Alpaca Go SDK: https://github.com/alpacahq/alpaca-trade-api-go
