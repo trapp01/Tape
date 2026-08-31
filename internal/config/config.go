@@ -27,9 +27,36 @@ type Config struct {
 	Broker  BrokerConfig  `toml:"broker"`
 	Costs   CostsConfig   `toml:"costs"`
 	LLM     LLMConfig     `toml:"llm"`
+	Data    DataConfig    `toml:"data"`
+	Brief   BriefConfig   `toml:"brief"`
 
 	// Home is the directory the config was loaded from. Not written to the file.
 	Home string `toml:"-"`
+}
+
+// DataConfig holds keys for the optional calendar sources. Each one is also
+// read from the environment: FRED_API_KEY, FINNHUB_API_KEY.
+type DataConfig struct {
+	FREDAPIKey    string `toml:"fred_api_key"`
+	FinnhubAPIKey string `toml:"finnhub_api_key"`
+}
+
+// BriefConfig shapes the morning briefing.
+type BriefConfig struct {
+	// Watchlist is the set of symbols the briefing reads and the model may note.
+	Watchlist []string `toml:"watchlist"`
+	// IndexSymbols are the broad-market ETFs read for the market line and the regime.
+	IndexSymbols []string `toml:"index_symbols"`
+	// RegimeSymbol is the instrument the regime is classified from and the
+	// default instrument for the call of the day.
+	RegimeSymbol string `toml:"regime_symbol"`
+	// CallThresholdPct is the move (in percent) an "up" or "down" call must
+	// clear to count as correct when the model leaves the threshold null.
+	CallThresholdPct  float64 `toml:"call_threshold_pct"`
+	NewsLookbackHours int     `toml:"news_lookback_hours"`
+	MoversTop         int     `toml:"movers_top"`
+	// CalendarDays is how far ahead the calendar looks, in days.
+	CalendarDays int `toml:"calendar_days"`
 }
 
 type AccountConfig struct {
@@ -83,7 +110,21 @@ func Default() Config {
 			CommissionMaxPct:   1.0,
 		},
 		LLM: LLMConfig{Provider: "anthropic", Model: "claude-opus-5"},
+		Brief: BriefConfig{
+			Watchlist:         []string{"SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META"},
+			IndexSymbols:      []string{"SPY", "QQQ", "IWM", "DIA"},
+			RegimeSymbol:      "SPY",
+			CallThresholdPct:  0.3,
+			NewsLookbackHours: 18,
+			MoversTop:         10,
+			CalendarDays:      3,
+		},
 	}
+}
+
+// PlaybookPath is the strategy file next to the config.
+func (c Config) PlaybookPath() string {
+	return filepath.Join(c.Home, "playbook.md")
 }
 
 // HomeDir is $TAPE_HOME if set, otherwise ~/.tape.
@@ -98,8 +139,33 @@ func HomeDir() (string, error) {
 	return filepath.Join(home, ".tape"), nil
 }
 
+// envSecrets is the one table of credentials the environment may supply. Load
+// reads it to override the file; WithoutEnvSecrets reads it to clear them again,
+// so a command that rewrites the file cannot put a key in it.
+var envSecrets = []struct {
+	env   string
+	field func(*Config) *string
+}{
+	{"ALPACA_API_KEY", func(c *Config) *string { return &c.Broker.Alpaca.APIKey }},
+	{"ALPACA_API_SECRET", func(c *Config) *string { return &c.Broker.Alpaca.APISecret }},
+	{"FRED_API_KEY", func(c *Config) *string { return &c.Data.FREDAPIKey }},
+	{"FINNHUB_API_KEY", func(c *Config) *string { return &c.Data.FinnhubAPIKey }},
+}
+
+// WithoutEnvSecrets clears every secret whose value came from the environment.
+// A key the user typed into the file stays where they put it.
+func (c Config) WithoutEnvSecrets() Config {
+	for _, s := range envSecrets {
+		field := s.field(&c)
+		if v := os.Getenv(s.env); v != "" && v == *field {
+			*field = ""
+		}
+	}
+	return c
+}
+
 // Load reads the config at path, or the default location when path is empty.
-// Secrets in the environment override the file: ALPACA_API_KEY, ALPACA_API_SECRET.
+// Secrets in the environment override the file; envSecrets lists them.
 func Load(path string) (Config, error) {
 	if path == "" {
 		home, err := HomeDir()
@@ -120,11 +186,10 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("parsing config %s: %w", path, err)
 	}
 	cfg.Home = filepath.Dir(path)
-	if v := os.Getenv("ALPACA_API_KEY"); v != "" {
-		cfg.Broker.Alpaca.APIKey = v
-	}
-	if v := os.Getenv("ALPACA_API_SECRET"); v != "" {
-		cfg.Broker.Alpaca.APISecret = v
+	for _, s := range envSecrets {
+		if v := os.Getenv(s.env); v != "" {
+			*s.field(&cfg) = v
+		}
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, fmt.Errorf("config %s: %w", path, err)
@@ -157,7 +222,25 @@ func (c Config) Validate() error {
 	if c.Broker.Name != "alpaca" {
 		return fmt.Errorf("broker.name %q is not supported (only \"alpaca\" for now)", c.Broker.Name)
 	}
-	return c.Costs.validate()
+	if err := c.Costs.validate(); err != nil {
+		return err
+	}
+	return c.Brief.validate()
+}
+
+func (b BriefConfig) validate() error {
+	if b.RegimeSymbol == "" {
+		return errors.New("brief.regime_symbol must be set")
+	}
+	// A zero threshold leaves "flat" undefined and makes an unchanged close both
+	// up and down, so the call it grades could never be wrong.
+	if b.CallThresholdPct <= 0 {
+		return fmt.Errorf("brief.call_threshold_pct must be positive, got %v", b.CallThresholdPct)
+	}
+	if b.NewsLookbackHours < 0 || b.MoversTop < 0 || b.CalendarDays < 0 {
+		return errors.New("brief.news_lookback_hours, movers_top, and calendar_days must not be negative")
+	}
+	return nil
 }
 
 // validate keeps the cost model from being switched off or inverted. The gate

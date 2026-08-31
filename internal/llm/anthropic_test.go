@@ -141,6 +141,73 @@ func TestAnthropicSchemaSetsOutputConfig(t *testing.T) {
 	}
 }
 
+func TestAnthropicStripsUnsupportedSchemaKeywords(t *testing.T) {
+	var gotBody map[string]any
+	prov := newTestAnthropic(t, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		json.Unmarshal(raw, &gotBody)
+		io.WriteString(w, okMessageBody)
+	})
+
+	_, err := prov.Complete(context.Background(), Request{
+		Messages:   []Message{{Role: RoleUser, Content: "brief me"}},
+		JSONSchema: json.RawMessage(constrainedSchema),
+		SchemaName: "brief",
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	cfg, _ := gotBody["output_config"].(map[string]any)
+	format, _ := cfg["format"].(map[string]any)
+	schema, ok := format["schema"].(map[string]any)
+	if !ok {
+		t.Fatalf("output_config.format.schema = %v, want an object", format["schema"])
+	}
+
+	sent, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatalf("re-encoding the sent schema: %v", err)
+	}
+	for _, kw := range []string{"minLength", "maximum", "minimum", "maxItems"} {
+		if strings.Contains(string(sent), `"`+kw+`"`) {
+			t.Errorf("%s survived into output_config: %s", kw, sent)
+		}
+	}
+
+	if schema["additionalProperties"] != false {
+		t.Errorf("additionalProperties = %v, want false", schema["additionalProperties"])
+	}
+	required, _ := schema["required"].([]any)
+	if len(required) != 3 {
+		t.Errorf("required = %v, want three entries", schema["required"])
+	}
+	props, _ := schema["properties"].(map[string]any)
+	call, _ := props["call"].(map[string]any)
+	callProps, _ := call["properties"].(map[string]any)
+
+	// Anthropic takes one type per node, so the nullable field arrives as anyOf.
+	pct, _ := callProps["threshold_pct"].(map[string]any)
+	branches, _ := pct["anyOf"].([]any)
+	if len(branches) != 2 {
+		t.Fatalf("threshold_pct = %v, want an anyOf pair", callProps["threshold_pct"])
+	}
+	first, _ := branches[0].(map[string]any)
+	second, _ := branches[1].(map[string]any)
+	if first["type"] != "number" || second["type"] != "null" {
+		t.Errorf("threshold_pct.anyOf = %v, want number then null", branches)
+	}
+
+	direction, _ := callProps["direction"].(map[string]any)
+	if enum, _ := direction["enum"].([]any); len(enum) != 3 {
+		t.Errorf("direction.enum = %v, want three values", direction["enum"])
+	}
+	risks, _ := props["risks"].(map[string]any)
+	if items, _ := risks["items"].(map[string]any); items["type"] != "string" {
+		t.Errorf("risks.items = %v, want a string schema", risks["items"])
+	}
+}
+
 func TestAnthropicRefusalWithoutContentErrors(t *testing.T) {
 	const refusal = `{
 	  "id": "msg_02", "type": "message", "role": "assistant", "model": "claude-opus-5",

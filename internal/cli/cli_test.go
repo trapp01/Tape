@@ -224,3 +224,31 @@ func TestLiveBannerSaysLocked(t *testing.T) {
 		t.Fatalf("bare [LIVE] tag in:\n%s", out)
 	}
 }
+
+func TestBriefFormattingHelpers(t *testing.T) {
+	for in, want := range map[int]string{0: "0", 412: "412", 1000: "1.0k", 41200: "41.2k"} {
+		if got := tokens(in); got != want {
+			t.Errorf("tokens(%d) = %q, want %q", in, got, want)
+		}
+	}
+	for in, want := range map[time.Duration]string{
+		500 * time.Millisecond:       "under a second",
+		38 * time.Second:             "38s",
+		38 * time.Minute:             "38m",
+		5*time.Hour + 12*time.Minute: "5h12m",
+		50 * time.Hour:               "2d2h",
+	} {
+		if got := humanDuration(in); got != want {
+			t.Errorf("humanDuration(%v) = %q, want %q", in, got, want)
+		}
+	}
+	if got := wrap("", 10); got != nil {
+		t.Errorf("wrap of nothing = %q, want no lines", got)
+	}
+	if got := wrap("one two three four", 8); len(got) != 3 || got[0] != "one two" {
+		t.Errorf("wrap = %q", got)
+	}
+	if got := percent1(3.08); got != "+3.1%" {
+		t.Errorf("percent1(3.08) = %q", got)
+	}
+}

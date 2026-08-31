@@ -107,7 +107,7 @@ func (a *anthropicProvider) params(req Request) (anthropic.BetaMessageNewParams,
 	}
 	// Temperature is rejected on current models, so it is never sent.
 	if len(req.JSONSchema) > 0 {
-		schema, err := schemaMap(req.JSONSchema)
+		schema, err := outputSchema(req.JSONSchema)
 		if err != nil {
 			return anthropic.BetaMessageNewParams{}, fmt.Errorf("%s: %w", a.name, err)
 		}
@@ -118,11 +118,20 @@ func (a *anthropicProvider) params(req Request) (anthropic.BetaMessageNewParams,
 	return params, nil
 }
 
-// schemaMap decodes a JSON schema document so the SDK can strip the keywords
-// structured outputs does not support.
-func schemaMap(raw json.RawMessage) (map[string]any, error) {
+// outputSchema puts a schema in the shape structured outputs accepts: no range
+// or length keywords, and nullable fields as anyOf rather than a type array.
+// The SDK's own transform drops a schema entirely when it meets a type array.
+func outputSchema(raw json.RawMessage) (map[string]any, error) {
+	stripped, err := StripUnsupportedKeywords(raw)
+	if err != nil {
+		return nil, err
+	}
+	expanded, err := rewriteSchema(stripped, nullableToAnyOf)
+	if err != nil {
+		return nil, err
+	}
 	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
+	if err := json.Unmarshal(expanded, &m); err != nil {
 		return nil, fmt.Errorf("decoding json schema: %w", err)
 	}
 	return m, nil

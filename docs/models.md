@@ -14,10 +14,19 @@ One request per trading day:
 
 | | |
 |---|---|
-| Input | 30k–80k tokens: headlines, quotes, an economic calendar, and a written strategy playbook |
-| Output | ~2–3k tokens, a **strict JSON object** — briefing plus 0–3 proposals with numeric fields |
+| Input | headlines, quotes, calendars, and a written strategy playbook, capped at 60,000 characters |
+| Output | at most 4,096 tokens, a **strict JSON object** — the briefing and one falsifiable call today, plus 0–3 proposals with numeric fields from Phase 2 |
 | Frequency | ~252 requests a year |
 | Deadline | under ~2 minutes, before the open |
+
+**The costs in this document are a ceiling, not a measurement.** Every per-briefing figure below is
+worked at 60,000 input tokens and 3,000 output, which is what the workload was sized for before it
+was built. What Phase 1 sends is bounded by `brief.MaxPromptChars`, 60,000 *characters* — nearer
+15k tokens, and today a good deal less than that: the system prompt is about 1,800 characters and
+the seeded playbook about 4,100, with headlines and movers trimmed by a ladder if the rest of the
+feed threatens the cap. A briefing today therefore costs something like a quarter of the table.
+Budget at the ceiling anyway; the playbook and the news feed are what grow into it, and the ranking
+does not move.
 
 Five things decide the ranking, in this order:
 
@@ -170,14 +179,17 @@ made-up stop-loss looks exactly like a good one.
 Two things follow for Tape. Prefer the OpenAI and Anthropic families where a headline may be
 truncated or a quote may be missing — they degrade by hedging, the others by inventing. And make
 the schema able to express *"I could not determine this"*, because a required numeric field with no
-nullable alternative is an instruction to fabricate.
+nullable alternative is an instruction to fabricate. The briefing schema does: `threshold_pct` is
+typed `["number", "null"]`, and a null takes the desk's configured default rather than a number the
+model made up.
 
 ### Long-context degradation, one line each
 
 Public measurements (Q1–Q2 2026) put usable recall at 90%+ around 100k tokens for the frontier
-models, falling to 60–76% at 1M. At Tape's 30–80k, **every model in the table is inside its good
-band**; the AA-LCR row above is the operative ranking. The counsel of prudence is not to let the
-prompt drift past ~100k as the playbook grows.
+models, falling to 60–76% at 1M. At Tape's prompt size, **every model in the table is comfortably
+inside its good band**; the AA-LCR row above is the operative ranking. The 60,000-character cap is
+what keeps it there as the playbook and the news feed grow, and raising that constant is the change
+to think twice about.
 
 ### The Anthropic tokenizer caveat
 

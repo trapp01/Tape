@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 
@@ -36,6 +37,7 @@ func newEODCmd() *cobra.Command {
 			if err := printRecap(a, recap); err != nil {
 				return err
 			}
+			scoreToday(ctx, a)
 			return flattenVerdict(a, rep)
 		},
 	}
@@ -65,6 +67,24 @@ func printRecap(a *app, recap journal.DayRecap) error {
 	pair(tw, "costs on today's fills", money(recap.FillCosts))
 	pair(tw, "net", a.style.pl(recap.NetPL, signedMoney(recap.NetPL)))
 	return tw.Flush()
+}
+
+// scoreToday grades the morning's call now that the session is over. It cannot
+// fail the command: eod exists to end the day flat, and an ungraded call is a
+// line to read, not a reason to stop.
+func scoreToday(ctx context.Context, a *app) {
+	now := timeNow()
+	if !gradesReady(now) {
+		fmt.Fprintf(a.out, "\nCall\n  %s.\n", gradeLater)
+		return
+	}
+	through := defaultThroughDay(now)
+	report, err := scoreCalls(ctx, a, through)
+	if err != nil {
+		fmt.Fprintf(a.out, "\nCall\n  not graded: %v\n", err)
+		return
+	}
+	printScoreReport(a, report, through)
 }
 
 // flattenVerdict fails the command when the day did not end flat, because a

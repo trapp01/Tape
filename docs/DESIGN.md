@@ -104,10 +104,15 @@ cmd/tape             the binary
 internal/cli         cobra commands: thin, one function call each
 internal/config      ~/.tape/config.toml, env overrides for secrets
 internal/broker      Broker + MarketData interfaces; alpaca/ is the paper adapter
-internal/journal     SQLite: orders, fills, round-trip trades, ledger, day recap
+internal/journal     SQLite: orders, fills, round-trip trades, ledger, day recap, briefings, calls
 internal/costs       slippage, commission, and regulatory-fee model applied to every fill
 internal/llm         Provider interface; native Anthropic plus one OpenAI-compatible client
 internal/trading     orchestration: submit, sync fills, flatten
+internal/market      read-only data contracts; alpacadata/ reads snapshots, bars, sessions, news
+internal/calendar    scheduled-event contracts; fomc/ fred/ finnhub/ are the sources
+internal/regime      the market label, computed from daily bars by fixed rules
+internal/playbook    reads the strategy file, and writes the seed once
+internal/brief       assembles the briefing, builds the prompt, validates and scores the call
 ```
 
 **Go for the tool, Python for research.** Go gives a single static binary, a maintained official
@@ -166,16 +171,69 @@ tells you nothing about how you would behave with an account you could actually 
 starts at the equity you configure and computes cash, P&L, and position sizing from its own fills.
 The broker's balance is ignored.
 
+## Briefing design
+
+`tape brief` is one model call a morning, and its entire value is that the call it makes can be
+graded later without argument. Five decisions carry that, and three of them are there because the
+obvious implementation gets them wrong in a way that only shows up in the scored record.
+
+**Session dates are Eastern.** One function, `market.SessionDate`, answers "which trading day is
+this" for every briefing, call, and score, in `America/New_York`. Alpaca stamps a daily bar at
+midnight Eastern; read from Mountain time that timestamp is 22:00 the previous day, so a briefing
+dated in the trader's own zone files calls under the wrong session and then grades them against the
+wrong bars. The configured `account.timezone` is for display and day recaps, and for nothing that
+decides which session something belongs to.
+
+**The call of the day locks at the open.** A session carries exactly one call, held by a unique
+index on the briefing and a first-wins check on the day. Before 09:30 Eastern, `tape brief --force`
+replaces it; after the bell, the first call stands and the second briefing is labelled a second
+read. A run in the evening is a call on the next session, keyed to that day, and the morning says
+when it was written. Without the lock, a re-run at 11am would be a prediction about a session that
+has already given away half its answer.
+
+**Grade only complete sessions.** A call is scored from the first and last regular one-minute bars
+of its own session, and only after 16:30 Eastern: the 16:00 bell plus the free REST feed's
+fifteen-minute delay. A daily bar is refused as a source because the venue may still be building
+it, and grading a half-built session writes a permanent verdict for a day that had not finished
+happening. `journal.ScoreCall` refuses a second score on a row that already carries one, so a wrong
+grade is a bug to fix rather than something to quietly re-run.
+
+**`ValidateAgainst` checks the reply against the briefing's own data.** The JSON schema is what the
+model was asked for; this is what the journal will accept. It rejects a call or a watch note naming
+a symbol that was not in the indexes or the watchlist, a lowercase ticker, a missing rationale, a
+missing invalidation, and a threshold at or below zero or above 5%. A call on a symbol the briefing
+never showed cannot be graded against a session it was never about, and a zero threshold makes an
+unchanged close count as both up and down and never flat — a call that cannot be wrong.
+
+**A reply that fails validation is archived and refused, never reused.** The raw text is written to
+the journal, the command exits non-zero naming the briefing id, and no call is filed. Re-reading
+that briefing runs the same validation and fails the same way. Keeping the rejected reply and
+rendering it anyway is the tempting shortcut, and it is wrong: a reply that could not be trusted
+once does not become trustworthy by being read a second time.
+
 ## Phases and the gate
 
-0. **Plumbing.** Config, broker adapter, journal, cost model, LLM layer, manual paper orders end to
-   end.
-1. **The briefing.** Data collectors behind provider interfaces, `tape brief` with a scored call of
-   the day, before any trade proposals exist.
-2. **Co-pilot.** A first playbook, schema-validated proposals, take and pass with reasons, the
-   Go-enforced guardrails.
+0. **Plumbing — complete.** Config, broker adapter, journal, cost model, LLM layer, manual paper
+   orders end to end.
+1. **The briefing — complete.** Data collectors behind provider interfaces, `tape brief` with a
+   scored call of the day, before any trade proposals exist.
+2. **Co-pilot — next.** Schema-validated proposals citing the playbook's setup ids, take and pass
+   with reasons, the Go-enforced guardrails.
 3. **The mirror.** Nightly scoring including counterfactuals, `tape stats`, weekly `tape retro` with
    playbook diffs. Then the actual experiment: three or more months of real mornings on paper.
+
+Phase 1 contains: a read-only market client over Alpaca's snapshots, daily bars, one-minute
+sessions, screener and news; three calendars (FOMC from a compiled-in table, US economic releases
+from FRED, watchlist earnings from Finnhub), each optional and each degrading to a named warning;
+the rule-based regime classifier; `playbook.md`, seeded once by `tape init` and never rewritten;
+`tape brief` with its prompt assembly, strict output schema, Go-side validation and verbatim
+archive; and `tape briefs`, `tape score`, `tape watchlist` and `tape playbook` around it. Schema
+version 2 adds the `briefings` and `calls` tables.
+
+What Phase 1 has not done is meet reality. Every adapter is tested against a fake HTTP server, the
+briefing against an in-memory feed and a fake model. Nothing here has run against a real Alpaca
+account, a real calendar API, or a real model, so nothing in the repository is evidence about how
+good the reads are — which is the whole reason the call is scored rather than shown off.
 
 Between three and four sits the gate. No real money moves until every box ticks:
 

@@ -85,7 +85,11 @@ type chatResponse struct {
 }
 
 func (o *openaiProvider) Complete(ctx context.Context, req Request) (Response, error) {
-	body, err := json.Marshal(o.buildRequest(req))
+	chat, err := o.buildRequest(req)
+	if err != nil {
+		return Response{}, err
+	}
+	body, err := json.Marshal(chat)
 	if err != nil {
 		return Response{}, fmt.Errorf("%s: encoding request: %w", o.name, err)
 	}
@@ -110,7 +114,7 @@ func (o *openaiProvider) Complete(ctx context.Context, req Request) (Response, e
 	return Response{}, fmt.Errorf("%s: giving up after %d attempts: %w", o.name, openaiAttempts, lastErr)
 }
 
-func (o *openaiProvider) buildRequest(req Request) chatRequest {
+func (o *openaiProvider) buildRequest(req Request) (chatRequest, error) {
 	maxTokens := req.MaxTokens
 	if maxTokens <= 0 {
 		maxTokens = defaultMaxTokens
@@ -123,12 +127,18 @@ func (o *openaiProvider) buildRequest(req Request) chatRequest {
 		if name == "" {
 			name = "response"
 		}
+		// strict:true rejects range and length keywords, so only the stripped
+		// schema goes on the wire.
+		wire, err := StripUnsupportedKeywords(req.JSONSchema)
+		if err != nil {
+			return chatRequest{}, fmt.Errorf("%s: %w", o.name, err)
+		}
 		out.ResponseFormat = &chatResponseFormat{
 			Type:       "json_schema",
-			JSONSchema: chatJSONSchema{Name: name, Schema: req.JSONSchema, Strict: true},
+			JSONSchema: chatJSONSchema{Name: name, Schema: wire, Strict: true},
 		}
-		// Several providers accept response_format and ignore it, so the schema is
-		// restated in the prompt as well.
+		// Several providers accept response_format and ignore it, so the full
+		// schema is restated in the prompt where the ranges still read.
 		system = withSchemaPrompt(system, req.JSONSchema)
 	}
 	if system != "" {
@@ -141,7 +151,7 @@ func (o *openaiProvider) buildRequest(req Request) chatRequest {
 		}
 		out.Messages = append(out.Messages, chatMessage{Role: role, Content: m.Content})
 	}
-	return out
+	return out, nil
 }
 
 // attempt performs one HTTP round trip. The bool reports whether a retry is worth it.

@@ -47,7 +47,7 @@ func newModeCmd() *cobra.Command {
 				return nil
 			case config.ModePaper:
 				cfg.Mode = config.ModePaper
-				if err := config.Write(path, withoutEnvSecrets(cfg)); err != nil {
+				if err := config.Write(path, cfg.WithoutEnvSecrets()); err != nil {
 					return err
 				}
 				fmt.Fprintf(out, "\nmode set to paper in %s\n", path)

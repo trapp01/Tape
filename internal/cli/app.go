@@ -36,6 +36,10 @@ var (
 	openJournal = func(cfg config.Config) (*journal.Store, error) {
 		return journal.Open(cfg.DBPath(), cfg.Account.StartingEquity)
 	}
+
+	// timeNow is the wall clock every command reads, so a test can pin the day
+	// and the venue's hour without waiting for one.
+	timeNow = time.Now
 )
 
 // app is everything a command needs: config, journal, venue, engine, and the
@@ -93,7 +97,34 @@ func newApp(cmd *cobra.Command, headline string) (*app, error) {
 	return &app{cfg: cfg, loc: loc, jnl: st, broker: bk, data: data, engine: engine, out: out, style: style}, nil
 }
 
+// newRecordApp is newApp without a venue, for commands that only read the
+// journal. Reading the archive must not require keys.
+func newRecordApp(cmd *cobra.Command, headline string) (*app, error) {
+	out := cmd.OutOrStdout()
+	style := newStyler(out)
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return nil, err
+	}
+	style.banner(out, cfg.Mode, headline)
+
+	loc, err := cfg.Location()
+	if err != nil {
+		return nil, err
+	}
+	st, err := openJournal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &app{cfg: cfg, loc: loc, jnl: st, out: out, style: style}, nil
+}
+
 func (a *app) Close() error { return a.jnl.Close() }
+
+// today is the current calendar day in the configured zone, which is where every
+// day boundary in tape is measured.
+func (a *app) today() string { return timeNow().In(a.loc).Format(dayLayout) }
 
 // costModel starts from the built-in defaults so regulatory fees stay set, then
 // applies what config overrides.
@@ -117,18 +148,6 @@ func resolveConfigPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, "config.toml"), nil
-}
-
-// withoutEnvSecrets drops credentials that Load pulled out of the environment, so
-// writing the config back never puts a key in the file.
-func withoutEnvSecrets(cfg config.Config) config.Config {
-	if v := os.Getenv("ALPACA_API_KEY"); v != "" && v == cfg.Broker.Alpaca.APIKey {
-		cfg.Broker.Alpaca.APIKey = ""
-	}
-	if v := os.Getenv("ALPACA_API_SECRET"); v != "" && v == cfg.Broker.Alpaca.APISecret {
-		cfg.Broker.Alpaca.APISecret = ""
-	}
-	return cfg
 }
 
 // bannerMode reads the mode without failing, so a command that runs before

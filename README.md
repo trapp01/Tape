@@ -16,9 +16,11 @@ itself, is worth more than one that claims to know where the market is going.** 
 no evidence behind it. The first produces the one thing a beginner cannot get any other way — an
 honest record.
 
-Phase 0 ships today: config, the Alpaca paper adapter, the SQLite journal, the cost model, the
-provider-agnostic model layer, and manual orders end to end, behind 135 tests that never touch the
-network. There is no briefing yet.
+Phases 0 and 1 ship today: config, the Alpaca paper adapter, the SQLite journal, the cost model,
+the provider-agnostic model layer, manual orders end to end, and the morning briefing — `tape
+brief` reads the market, applies a playbook you wrote, and files one falsifiable call that `tape
+score` grades against the session that followed. 443 tests, none of which touch the network. There
+are no trade proposals yet.
 
 Note: tape has no live-broker code path. `tape mode live` is refused, and no flag, environment
 variable, or config value changes that.
@@ -131,7 +133,8 @@ Two loops. The second one is why this is more than a chat wrapper.
 state, regime, what the calendar is about to do, and a falsifiable call of the day — then proposes
 zero to three trades, each tied to a named rule in the playbook and each carrying its stop, target
 and size before it carries anything else. You take or pass. Taken orders go to the broker.
-Everything goes into the journal.
+Everything goes into the journal. The briefing and the call are built and graded today; the
+proposals are Phase 2 and the weekly retro is Phase 3.
 
 **Learning.** Nightly, the journal is scored against what actually happened. Weekly, the model reads
 its own scored record and proposes diffs to `playbook.md`, which you review like a pull request.
@@ -163,8 +166,10 @@ may override", it is a bug.
 **It never sees a secret.** Keys resolve from the environment at the edge of the process and go into
 no prompt, no log, and no journal row.
 
-Phases 1 and 2 build the proposal path; those rules are the constraints it is being built against.
-The first and fourth are already structural today.
+Phase 1 built the briefing inside those rules; Phase 2 builds the proposal path against them. The
+first and fourth are structural today, and the second is why a call's threshold, the move it is
+graded on, and the verdict are all computed in Go from the session's own bars rather than read out
+of the reply.
 
 ## Why it's built this way
 
@@ -269,8 +274,9 @@ fastest and they multiply every mistake. Crypto has thin qualitative information
 which fights a morning routine. Shorting is one more way to be wrong while learning. All of them fit
 behind the same interfaces later.
 
-**Not a backtester, yet.** Phase 3 brings scoring against real history; a walk-forward backtest is
-the Python sidecar's job, and neither exists today.
+**Not a backtester, yet.** `tape score` grades the call of the day against the session that
+followed, which is one claim a day and nothing else. Trade-level scoring with counterfactuals is
+Phase 3, a walk-forward backtest is the Python sidecar's job, and neither exists today.
 
 **Not a data terminal.** Few providers, well-tested and replaceable, is the entire ambition — see
 the OpenBB influence above.
@@ -285,7 +291,7 @@ Run it in paper mode until you have enough entries in the journal to judge it. T
 reason the journal exists — a proposal you did not record is a proposal you cannot grade — and it is
 why real money sits behind a gate with the criteria fixed in advance.
 
-Read the source before you trade on anything it says. It is about 5,700 lines of Go, and the two
+Read the source before you trade on anything it says. It is about 10,500 lines of Go, and the two
 parts that decide whether the numbers mean anything are small enough to read in a sitting:
 `internal/costs` is 121 lines and `internal/trading/rules.go` is 135.
 
@@ -313,6 +319,7 @@ $ tape init
 
 config   ~/.tape/config.toml
 journal  ~/.tape/tape.db
+playbook ~/.tape/playbook.md (wrote the default playbook)
 timezone America/Edmonton
 
 Next steps
@@ -320,22 +327,43 @@ Next steps
   2. export ALPACA_API_KEY=...
      export ALPACA_API_SECRET=...
   3. export ANTHROPIC_API_KEY=...   (llm provider anthropic)
-  4. tape status
+  4. tape status, then tape brief
+
+Optional, for the briefing's calendars
+  export FRED_API_KEY=...      economic releases (https://fredaccount.stlouisfed.org/apikeys)
+  export FINNHUB_API_KEY=...   watchlist earnings (https://finnhub.io/register)
+  Without them the briefing still runs and names the calendars it went without.
 
 tape's ledger starts at $5,000.00 regardless of Alpaca's paper balance.
 ```
 
-Alpaca paper keys are free and take a couple of minutes. Setting `$TAPE_HOME` moves the config and
-the journal somewhere other than `~/.tape`, which is how the test suite keeps runs isolated. Then:
+Alpaca paper keys are free and take a couple of minutes. FRED and Finnhub are optional and also
+free; without them the economic and earnings calendars come back empty and the briefing prints the
+sources it went without, under `SOURCES`. Setting `$TAPE_HOME` moves the config, the journal and the
+playbook somewhere other than `~/.tape`, which is how the test suite keeps runs isolated.
+
+`init` writes `playbook.md` once and never again. A second `init --force` rewrites the config and
+leaves the playbook alone, because the strategy file is yours.
+
+The ritual is three commands and whatever you decide to do between the first two:
 
 ```sh
 export ALPACA_API_KEY=... ALPACA_API_SECRET=...
 export ANTHROPIC_API_KEY=...      # or whichever provider you configured
 
+tape brief           # the read, and one call that gets graded — before the open
+                     # then take the trades yourself, or none
+tape eod             # flatten everything and recap the day
+tape score           # grade the call, after 16:30 ET
+```
+
+`eod` grades the call itself when you run it late enough, so `tape score` is for the days you
+closed out early. The rest of Phase 0 is still there when you want it:
+
+```sh
 tape status          # ledger, broker balance, market clock
 tape buy SPY 1       # market order, journaled and cost-modeled
 tape pos             # open positions from the journal, priced live
-tape eod             # flatten everything and recap the day
 ```
 
 The blocks below are real output, rendered through the in-memory venue the tests use rather than a
@@ -425,11 +453,147 @@ QTY  RAW      MODELED  COMMISSION  FEES   NET
 the slippage direction too — the buy was modeled above the quote, this sell below it. Both against
 you.
 
+## The briefing
+
+`tape brief` is the morning ritual and the whole of Phase 1. It reads the market, hands the model
+everything it collected together with your playbook, and archives the reply with one call that gets
+graded after the close. It proposes no trades and places no orders. The point of doing it in this
+order is to find out whether the reads are worth anything before anything is riding on them.
+
+**What the model is shown**, all of it archived verbatim next to the reply so an old briefing can be
+re-read against what actually happened:
+
+- The index ETFs — `SPY QQQ IWM DIA` by default — with the last trade, the previous close, and the
+  move between them.
+- A regime label computed in Go from eighty daily bars of `SPY`: a 20- and 50-day moving average
+  and annualised realised volatility over twenty days, turned into `uptrend, low vol` by fixed
+  thresholds. The model reads the label and is told to let it set the day's ceiling. It does not get
+  to choose it, and the bar for today's unfinished session is dropped before the averages are taken.
+- The calendar for the next three days: FOMC decision days from a table compiled into the binary,
+  US economic releases from FRED, and earnings for watchlist symbols from Finnhub.
+- The watchlist with quotes, up to five headlines per symbol and fifteen market-wide ones, each
+  story's summary clipped to 300 characters.
+- The session's top gainers, losers and most actives from Alpaca's screener.
+- The ledger's cash, the venue clock, and the list of sources that were unreachable.
+- `playbook.md`, verbatim, as the last block of the message.
+
+All of that has to fit 60,000 characters. Over the cap, the prompt drops to two headlines a symbol,
+then to none, then drops the movers; a briefing that still does not fit is cut at the tail, which
+lands in the playbook, because a playbook that long is yours to shorten and the morning should still
+run.
+
+**What it must return** is JSON against a strict schema: a market read, a regime note, a calendar
+note, at most twelve watchlist notes each carrying a bias of bullish, bearish or neutral, at most
+five risks, and one call of the day. The call is an instrument, a direction of up, down or flat, a
+threshold in percent — or null to take the desk's configured default — a rationale that names the
+playbook rule it rests on, and an invalidation: the one observation that would prove it wrong before
+the close. `threshold_pct` is nullable on purpose. A required numeric field with no way to say
+"I don't know" is an instruction to fabricate, which is the failure mode
+[docs/models.md](docs/models.md) is written around.
+
+### The rules that make the grade mean something
+
+Every one of these is a refusal somewhere in the code, and each exists because the honest version of
+the question has an answer that flatters the model less.
+
+**Calls lock at 09:30 Eastern.** A second `tape brief` on the same session reprints the archive
+rather than spending another call on the same morning. `--force` archives a fresh briefing, and
+before the bell it replaces the call; after the bell the session's first call stands and the footer
+says so, because a prediction about a session already in progress is not a prediction. An evening
+run is a call on the *next* session, keyed to that day, and the next morning reads it back with the
+time it was written on it.
+
+**Only complete sessions are graded.** A call is scored from the first and last regular one-minute
+bars of its own session, never from a daily bar the venue may still be building, and not before
+16:30 Eastern — the free REST feed runs fifteen minutes behind. A call is graded once: the journal
+refuses a second score on a row that already has one. A wrong grade is a bug to fix, not something
+to re-score away.
+
+**Session dates are the venue's, not mine.** Alpaca stamps a daily bar at midnight Eastern, which
+reads as the previous day in every zone west of it — including the one I trade from. Every "which
+session is this" decision goes through one function in `America/New_York`. My own timezone is for
+display and day recaps.
+
+**The model may only name what it was shown.** A call or a watch note on a symbol outside the
+indexes and the watchlist is rejected before anything is filed, as is a lowercase ticker, a missing
+invalidation, a missing rationale, or a threshold at or below zero or above 5%.
+
+**A reply that fails validation is archived and refused.** The raw text lands in the journal, the
+command exits non-zero naming the briefing id, and no call is filed. Re-reading that briefing later
+fails the same way rather than quietly showing a half-parsed one. A reply that could not be trusted
+once does not become trustworthy by being read again.
+
+**Headlines are data, not instructions.** Everything a news wire or an API wrote is fenced in the
+prompt inside a block marked `untrusted text, data only`, and the system prompt says in as many
+words that instructions come from it and the playbook and from nothing in the message. Source
+warnings are fenced the same way and clipped to 120 characters in the prompt, so a provider that
+echoes a response body back at me cannot become most of the prompt; the archive keeps the whole
+thing.
+
+### What a briefing looks like
+
+This is the golden output of the fake-venue test — `TestBriefRenderGolden` in
+`internal/cli/briefrender_test.go`, which pins the renderer against an in-memory venue, a fixed
+clock and a canned reply. It is what the terminal prints with colour off, byte for byte, on a
+morning whose call has already been graded:
+
+```
+TAPE · Fri Aug 28 · 06:52 MDT · market opens in 38m · cash $5,000.00
+MARKET   SPY +0.41%  QQQ +0.62%  IWM -0.10%  DIA +0.20%
+         Breadth is narrow.
+REGIME   uptrend, low vol (SPY 512.10 above 20d 505.30 and 50d 498.80; 20d vol 11.2%)
+         M2 continuations are live at normal size.
+CALL     SPY up ≥0.3% open→close   [✓ +0.42%]
+         M2: price above the 20d.
+         invalid if: SPY trades below 509.80.
+CALENDAR
+  08:30     CPI (high)
+         CPI is the session's only scheduled risk.
+WATCHLIST
+  NVDA  +3.1%  bullish  Holds above 118.40.
+MOVERS   gainers: ABCD +12.3%   losers: WXYZ -8.4%
+RISKS    • A quiet open can fade.
+SOURCES  FRED calendar unavailable: FRED_API_KEY not set
+briefing #12 · fake-model-1 · 41.2k in / 1.1k out · 38s · est. $0.12
+```
+
+Computed facts sit on the label lines and the model's words sit underneath them, so it is always
+obvious which is which. `CALL` carries its verdict inline — `[scored after close]` until the session
+is read, then the mark and the actual move. `SOURCES` is what the briefing was written without, and
+it is on the screen rather than in a log because a read built without the economic calendar is a
+different read.
+
+The archive is a command too:
+
+```sh
+tape briefs             # every briefing, newest first, with its call and its grade
+tape briefs show today  # re-render one from the journal
+tape brief --dry-run    # assemble everything and print both prompts, ask nothing, archive nothing
+tape brief --json       # the input, the reply and the briefing id, for the sidecar
+```
+
+`--dry-run` is the one to reach for before you trust a morning: it prints the entire prompt the
+model would have been sent, character count and all, without spending a call.
+
+### The playbook is yours
+
+`playbook.md` sits next to the config and the journal, and tape reads it, cites it, and never
+writes to it. `init` seeds it once with something you can actually run against: a posture for each
+regime the classifier can produce, four setups with ids — `M1` gap-and-go continuation, `M2`
+momentum continuation above the prior high, `R1` range-edge mean reversion, and `N1`, the
+conditions that end the discussion for a symbol — a set of risk rules that restate what Go will
+enforce in Phase 2, and the rules for the call of the day.
+
+It is a starting point and not a recommendation. It is in the repo so the first briefing has
+something to cite, and the whole design of the learning loop is that you change it, in git, against
+a scored record. `tape playbook` prints the one you have.
+
 ## Configuration
 
 `~/.tape/config.toml`, written by `tape init` and edited by hand. Secrets belong in the environment;
-`ALPACA_API_KEY` and `ALPACA_API_SECRET` override whatever is in the file, and `tape mode paper`
-will not write an env-supplied key back into it.
+`ALPACA_API_KEY`, `ALPACA_API_SECRET`, `FRED_API_KEY` and `FINNHUB_API_KEY` override whatever is in
+the file, and a command that rewrites the config — `tape mode paper`, `tape watchlist add` — will
+not write an env-supplied key back into it.
 
 ```toml
 mode = 'paper'            # 'live' is refused until the gate opens
@@ -457,10 +621,40 @@ provider = 'anthropic'
 model = 'claude-opus-5'
 base_url = ''             # required for 'openai-compatible'; overrides the preset for the rest
 api_key = ''              # prefer the provider's key env var
+
+[data]                    # the briefing's optional calendars; both keys are free
+fred_api_key = ''         # prefer $FRED_API_KEY
+finnhub_api_key = ''      # prefer $FINNHUB_API_KEY
+
+[brief]
+watchlist = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META']
+index_symbols = ['SPY', 'QQQ', 'IWM', 'DIA']   # the MARKET line, and the symbols a call may name
+regime_symbol = 'SPY'     # what the regime is classified from
+call_threshold_pct = 0.3  # the move a call must clear when it leaves its own threshold null
+news_lookback_hours = 18  # 0 turns news off rather than asking for stories since right now
+movers_top = 10           # 0 skips the screener
+calendar_days = 3         # how far ahead the calendar looks
 ```
 
 The SEC fee and the FINRA TAF are not in the file. They are not yours to choose, so they live in
 `costs.Default()` and apply to every sell regardless of what the config says.
+
+`brief.watchlist` is also editable from the CLI, which is the same file with the validation and the
+env-secret scrub already wired: `tape watchlist ls`, `tape watchlist add TSLA AMD`, `tape watchlist
+rm META`.
+
+```console
+$ tape watchlist ls
+
+[paper] watchlist
+
+SPY  QQQ  AAPL  MSFT  NVDA  AMZN  GOOGL  META
+8 symbol(s) · indexes SPY QQQ IWM DIA · regime SPY
+```
+
+`call_threshold_pct` will not take a zero. A zero threshold makes an unchanged close count as both
+up and down and never flat, which is a call that cannot be wrong — the same reason a negative cost
+is refused two blocks up.
 
 Setting `slippage_bps = 0` and `commission_min = 0` will make paper look better. It will also make
 every number tape produces a lie, which is the one thing this repo is built not to do.
@@ -497,27 +691,62 @@ tape has to use API keys. [Headless mode](https://code.claude.com/docs/en/headle
 [docs/models.md](docs/models.md#the-claude-code-provider) for the flags and the caveats.
 
 Which model to actually run is its own document. [docs/models.md](docs/models.md) ranks twenty of
-them against this specific workload — one call a morning, 30–80k tokens of messy text in, strict
-JSON out — with prices, long-context benchmark scores, latency budgets and structured-output
+them against this specific workload — one call a morning, up to 60,000 characters of messy text in,
+strict JSON out — with prices, long-context benchmark scores, latency budgets and structured-output
 guarantees. The headline is Claude Opus 5 for quality, Gemini 3.7 Flash for value, and GLM-5.3-Flash
 for almost nothing at all — and the spread between the best and the cheapest sane option is about
-$93 a year. At one call a day, optimise for the briefing being right, not for the bill.
+$93 a year, at prices worked out on a prompt four times the size Phase 1 actually sends. At one call
+a day, optimise for the briefing being right, not for the bill.
 
 ## Commands
 
 ```
-tape init            write config.toml and create the journal
-tape status          ledger, broker balance (labelled ignored), and the market clock
-tape buy SYM QTY     buy, with --limit, --stop, --target, --note
-tape sell SYM QTY    sell shares the ledger holds, with --limit and --note
-tape pos             open positions from the journal, priced live
-tape orders          journaled orders, with --open and --since
-tape watch SYM...    stream live quotes until Ctrl-C
-tape eod             flatten everything and recap the day
-tape mode [paper]    show or set the mode; `live` is refused
-tape llm ping        check the configured provider answers
-tape llm providers   list the known providers
-tape version         version, platform, and Go toolchain
+tape init                write config.toml, the journal, and the default playbook
+tape status              ledger, broker balance (labelled ignored), and the market clock
+
+tape brief               the morning read and one falsifiable call
+                         --dry-run, --json, --force
+tape briefs              archived briefings, newest first, with --limit
+tape briefs show ID      re-render one from the journal; ID or "today"
+tape score               grade the calls the sessions have answered, with --through
+tape watchlist ls        the symbols the briefing reads
+tape watchlist add SYM   add symbols to the watchlist
+tape watchlist rm SYM    remove symbols from the watchlist
+tape playbook            print the strategy file; --write creates it if missing
+
+tape buy SYM QTY         buy, with --limit, --stop, --target, --note
+tape sell SYM QTY        sell shares the ledger holds, with --limit and --note
+tape pos                 open positions from the journal, priced live
+tape orders              journaled orders, with --open and --since
+tape watch SYM...        stream live quotes until Ctrl-C
+tape eod                 flatten everything, recap the day, grade the call
+
+tape mode [paper]        show or set the mode; `live` is refused
+tape llm ping            check the configured provider answers
+tape llm providers       list the known providers
+tape version             version, platform, and Go toolchain
+```
+
+`briefs`, `briefs show`, `watchlist` and `playbook` read the config and the journal and nothing
+else, so they work on a machine with no keys on it at all:
+
+```console
+$ tape briefs
+
+[paper] briefs
+
+no briefings yet; run `tape brief`.
+```
+
+Everything that touches the market says plainly when it can't, and says it before doing any work.
+That includes the dry run: it asks the model nothing, but assembling the briefing still means
+reading quotes and the venue clock.
+
+```console
+$ tape brief --dry-run
+
+[paper] brief
+tape: alpaca: ALPACA_API_KEY / ALPACA_API_SECRET not set (free paper keys: https://app.alpaca.markets)
 ```
 
 Every command prints its mode on the first line, so no output is ever ambiguous about which account
@@ -534,12 +763,13 @@ goes through the broker's own UI.
 **Phase 0 — plumbing.** Config, broker adapter, journal, cost model, model layer, manual paper
 orders end to end. Done.
 
-**Phase 1 — the briefing.** Data collectors behind provider interfaces, and `tape brief` with a
-scored call of the day, before any trade proposals exist.
+**Phase 1 — the briefing.** Data collectors behind provider interfaces, a rule-based regime
+classifier, the seeded playbook, and `tape brief` with a scored call of the day, before any trade
+proposals exist. Done.
 
-**Phase 2 — co-pilot.** A first playbook, schema-validated proposals, take and pass with reasons,
-and the rest of the Go-enforced guardrails: per-trade risk cap, max open positions, no averaging
-down, flat by close, halt after two stopped-out losses in a day.
+**Phase 2 — co-pilot.** Schema-validated proposals against the playbook's setup ids, take and pass
+with reasons, and the rest of the Go-enforced guardrails: per-trade risk cap, max open positions, no
+averaging down, flat by close, halt after two stopped-out losses in a day. Next.
 
 **Phase 3 — the mirror.** Nightly scoring including counterfactuals, `tape stats`, weekly
 `tape retro` with playbook diffs. Then the actual experiment: three or more months of real mornings
@@ -567,15 +797,25 @@ reasoning, the evidence behind each decision, and what I cut are in
 Early, and honest about it. Phase 0 is complete and tested: config and env overrides, the Alpaca
 paper adapter, the SQLite journal with FIFO trade matching and day recaps, the cost model, the
 provider-agnostic model layer with its three clients — native Anthropic, OpenAI-compatible, and
-Claude Code — the trading engine with its Phase 0 guardrails, and eleven commands. 135 tests, none
-of which touch the network: venues and model endpoints are `httptest` servers asserting request
-shape, trading runs against an in-memory fake broker, and the journal uses a temp-file SQLite.
+Claude Code — and the trading engine with its Phase 0 guardrails.
 
-Not done: **tape has not yet been run against a real Alpaca paper account.** Everything above the
-adapter is verified; the adapter itself is tested against a fake HTTP server and nothing more. There
-is no briefing, no playbook, no proposals, no scoring, and no stats command. There is no `tape
-cancel`, so a bracket you want out of has to go through `eod` or the broker. The journal schema will
-change before any of those land.
+Phase 1 is complete and tested too: the read-only market client over Alpaca's snapshots, daily bars,
+one-minute sessions, screener and news; the three calendars; the rule-based regime classifier; the
+seeded playbook; `tape brief` with its prompt assembly, strict schema, Go-side validation and
+archive; `tape briefs`, `tape score`, `tape watchlist` and `tape playbook`. Sixteen commands. 443
+tests, none of which touch the network: venues, calendars and model endpoints are `httptest` servers
+asserting request shape, the briefing and the scorer run against an in-memory feed and a fake model,
+trading runs against an in-memory fake broker, and the journal uses a temp-file SQLite.
+
+Not done, and this is the important part: **tape has never been run against a real Alpaca account, a
+real calendar API, or a real model.** Every adapter is tested against a fake HTTP server and nothing
+more, and no briefing in this repository was written by an actual model — the one further up is a
+test fixture, and it says so. What a real model does with a real morning's headlines, and whether
+its calls beat a coin over three months, is exactly the thing nobody here knows yet.
+
+There are no trade proposals, no counterfactual scoring, no `tape stats`, and no weekly retro. There
+is no `tape cancel`, so a bracket you want out of has to go through `eod` or the broker. The journal
+schema will change before those land; it is at version 2 today.
 
 I'm open-sourcing it at this stage because the interesting part is not the trading. It is that the
 honest version of this tool — cost-modeled fills, a ledger that ignores the broker, limits in

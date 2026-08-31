@@ -109,6 +109,67 @@ func signedMoney(v float64) string {
 
 func percent(v float64) string { return fmt.Sprintf("%+.2f%%", v) }
 
+// percent1 is the coarser form for a scanning column, where a second decimal is
+// noise.
+func percent1(v float64) string { return fmt.Sprintf("%+.1f%%", v) }
+
+// tokens abbreviates a model's token count: 41200 reads as 41.2k.
+func tokens(n int) string {
+	if n < 1000 {
+		return strconv.Itoa(n)
+	}
+	return strconv.FormatFloat(float64(n)/1000, 'f', 1, 64) + "k"
+}
+
+// humanDuration is a rough gap between two clock times: minutes until the bell,
+// seconds a model took. Precision past the leading unit is not information here.
+func humanDuration(d time.Duration) string {
+	switch {
+	case d < time.Second:
+		return "under a second"
+	case d < time.Minute:
+		return strconv.Itoa(int(d.Seconds())) + "s"
+	case d < time.Hour:
+		return strconv.Itoa(int(d.Minutes())) + "m"
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+	default:
+		return fmt.Sprintf("%dd%dh", int(d.Hours())/24, int(d.Hours())%24)
+	}
+}
+
+// oneLine flattens model or feed text so one thought stays one row.
+func oneLine(s string) string {
+	return strings.TrimSpace(strings.Join(strings.Fields(s), " "))
+}
+
+// wrap breaks text on spaces at width runes. Empty text produces no lines, so a
+// section with nothing to say prints nothing.
+func wrap(text string, width int) []string {
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return nil
+	}
+	var (
+		lines []string
+		line  []string
+		n     int
+	)
+	for _, w := range words {
+		runes := len([]rune(w))
+		if len(line) > 0 && n+1+runes > width {
+			lines = append(lines, strings.Join(line, " "))
+			line, n = nil, 0
+		}
+		if len(line) > 0 {
+			n++
+		}
+		line = append(line, w)
+		n += runes
+	}
+	return append(lines, strings.Join(line, " "))
+}
+
 // price is a raw quote, which is not money the account holds.
 func price(v float64) string { return "$" + strconv.FormatFloat(v, 'f', 2, 64) }
 

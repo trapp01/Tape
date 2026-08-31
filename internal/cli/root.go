@@ -39,6 +39,11 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(
 		newInitCmd(),
 		newStatusCmd(),
+		newBriefCmd(),
+		newBriefsCmd(),
+		newScoreCmd(),
+		newWatchlistCmd(),
+		newPlaybookCmd(),
 		newBuyCmd(),
 		newSellCmd(),
 		newPosCmd(),

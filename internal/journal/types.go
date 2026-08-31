@@ -92,6 +92,42 @@ type Ledger struct {
 	OpenPositions  []OpenPosition
 }
 
+// Briefing is one archived morning briefing: exactly what the model was shown
+// and exactly what it replied, so a later reader can judge both.
+type Briefing struct {
+	ID          int64
+	Mode        string
+	GeneratedAt time.Time
+	// Day is the local calendar day (YYYY-MM-DD) the briefing was written for.
+	Day          string
+	Provider     string
+	Model        string
+	InputJSON    []byte
+	OutputJSON   []byte
+	InputTokens  int
+	OutputTokens int
+	CostUSD      *float64
+	LatencyMs    int64
+}
+
+// Call is the briefing's falsifiable prediction, scored after the close.
+type Call struct {
+	ID           int64
+	BriefingID   int64
+	Mode         string
+	Day          string
+	Instrument   string
+	Direction    string
+	ThresholdPct float64
+	Rationale    string
+	// Scored fields stay nil until the session the call was made for has closed.
+	ScoredAt  *time.Time
+	Open      *float64
+	Close     *float64
+	ActualPct *float64
+	Correct   *bool
+}
+
 type DayRecap struct {
 	Day         time.Time
 	Trades      []Trade

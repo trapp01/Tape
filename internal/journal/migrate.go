@@ -12,6 +12,7 @@ import (
 // existing journals on a different schema than fresh ones.
 var migrations = [][]string{
 	schemaV1,
+	schemaV2,
 }
 
 // schemaV1 is the order and fill record every stat is derived from.
@@ -61,6 +62,45 @@ var schemaV1 = []string{
 	`CREATE UNIQUE INDEX fills_broker_fill_id ON fills(broker_fill_id) WHERE broker_fill_id <> ''`,
 	`CREATE INDEX fills_order ON fills(order_id)`,
 	`CREATE INDEX fills_symbol_filled_at ON fills(symbol, filled_at)`,
+}
+
+// schemaV2 archives the morning briefing and its one falsifiable call. input_json
+// and output_json are the verbatim payloads, so a briefing can be re-read next to
+// what actually happened.
+var schemaV2 = []string{
+	`CREATE TABLE briefings (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		mode          TEXT    NOT NULL,
+		generated_at  TEXT    NOT NULL,
+		day           TEXT    NOT NULL,
+		provider      TEXT    NOT NULL DEFAULT '',
+		model         TEXT    NOT NULL DEFAULT '',
+		input_json    BLOB    NOT NULL,
+		output_json   BLOB    NOT NULL,
+		input_tokens  INTEGER NOT NULL DEFAULT 0,
+		output_tokens INTEGER NOT NULL DEFAULT 0,
+		cost_usd      REAL,
+		latency_ms    INTEGER NOT NULL DEFAULT 0
+	)`,
+	`CREATE INDEX briefings_mode_day ON briefings(mode, day)`,
+	`CREATE TABLE calls (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		briefing_id   INTEGER NOT NULL REFERENCES briefings(id) ON DELETE CASCADE,
+		mode          TEXT    NOT NULL,
+		day           TEXT    NOT NULL,
+		instrument    TEXT    NOT NULL,
+		direction     TEXT    NOT NULL,
+		threshold_pct REAL    NOT NULL DEFAULT 0,
+		rationale     TEXT    NOT NULL DEFAULT '',
+		scored_at     TEXT,
+		open          REAL,
+		close         REAL,
+		actual_pct    REAL,
+		correct       INTEGER
+	)`,
+	`CREATE INDEX calls_mode_day ON calls(mode, day)`,
+	// One call per briefing: the call of the day is the briefing's single graded claim.
+	`CREATE UNIQUE INDEX calls_briefing ON calls(briefing_id)`,
 }
 
 // migrate brings db up to the newest schema version, applying each pending

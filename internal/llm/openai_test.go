@@ -145,6 +145,90 @@ func TestOpenAICompatibleSchemaSetsResponseFormatAndPrompt(t *testing.T) {
 	}
 }
 
+// constrainedSchema carries every keyword strict structured outputs rejects.
+const constrainedSchema = `{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["market_read", "call", "risks"],
+  "properties": {
+    "market_read": {"type": "string", "minLength": 1, "description": "the tape"},
+    "call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["direction", "threshold_pct"],
+      "properties": {
+        "direction": {"type": "string", "enum": ["up", "down", "flat"]},
+        "threshold_pct": {"type": ["number", "null"], "minimum": 0, "maximum": 5}
+      }
+    },
+    "risks": {"type": "array", "maxItems": 5, "items": {"type": "string", "minLength": 1}}
+  }
+}`
+
+func TestOpenAICompatibleStripsUnsupportedSchemaKeywords(t *testing.T) {
+	preset, _ := FindPreset("openai")
+
+	var gotBody map[string]any
+	prov := newTestOpenAI(t, preset, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		json.Unmarshal(raw, &gotBody)
+		io.WriteString(w, okChatBody)
+	})
+
+	if _, err := prov.Complete(context.Background(), Request{
+		Messages:   []Message{{Role: RoleUser, Content: "brief me"}},
+		JSONSchema: json.RawMessage(constrainedSchema),
+		SchemaName: "brief",
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	rf, _ := gotBody["response_format"].(map[string]any)
+	js, _ := rf["json_schema"].(map[string]any)
+	schema, ok := js["schema"].(map[string]any)
+	if !ok {
+		t.Fatalf("json_schema.schema = %v, want an object", js["schema"])
+	}
+
+	sent, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatalf("re-encoding the sent schema: %v", err)
+	}
+	for _, kw := range []string{"minLength", "maximum", "minimum", "maxItems"} {
+		if strings.Contains(string(sent), `"`+kw+`"`) {
+			t.Errorf("%s survived into response_format: %s", kw, sent)
+		}
+	}
+
+	if schema["additionalProperties"] != false {
+		t.Errorf("additionalProperties = %v, want false", schema["additionalProperties"])
+	}
+	required, _ := schema["required"].([]any)
+	if len(required) != 3 {
+		t.Errorf("required = %v, want three entries", schema["required"])
+	}
+	props, _ := schema["properties"].(map[string]any)
+	call, _ := props["call"].(map[string]any)
+	callProps, _ := call["properties"].(map[string]any)
+	pct, _ := callProps["threshold_pct"].(map[string]any)
+	types, _ := pct["type"].([]any)
+	if len(types) != 2 || types[0] != "number" || types[1] != "null" {
+		t.Errorf("threshold_pct.type = %v, want [number null]", pct["type"])
+	}
+	direction, _ := callProps["direction"].(map[string]any)
+	if enum, _ := direction["enum"].([]any); len(enum) != 3 {
+		t.Errorf("direction.enum = %v, want three values", direction["enum"])
+	}
+
+	// The prompt still restates the original, ranges and all.
+	msgs, _ := gotBody["messages"].([]any)
+	system, _ := msgs[0].(map[string]any)
+	content, _ := system["content"].(string)
+	if !strings.Contains(content, "minLength") || !strings.Contains(content, "maxItems") {
+		t.Errorf("system prompt should restate the original schema: %q", content)
+	}
+}
+
 func TestOpenAICompatibleRetriesServerError(t *testing.T) {
 	preset, _ := FindPreset("openai")
 	calls := 0

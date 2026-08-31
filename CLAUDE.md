@@ -95,6 +95,26 @@ hack across the boundary.
 - No secrets in prompts, logs, or the journal. Keys come from env (`ALPACA_API_KEY`,
   `ALPACA_API_SECRET`, the preset's key env) or `config.toml`; never from source.
 
+### The Briefing Is Scored Honestly or Not at All
+- **Session dates are Eastern.** Alpaca stamps daily bars at midnight ET; in Mountain time that is
+  22:00 the previous day. Any "which session is this bar" logic uses `market.SessionDate`
+  (America/New_York), never the user's timezone. The user's zone is for display and day recaps only.
+- **The call of the day locks at the open.** A call may be replaced with `--force` until 09:30 ET
+  on its session day; after that the first call stands. An evening `tape brief` is a call on the
+  next session, keyed to that day, and the morning run says so.
+- **Grade only complete sessions.** Calls are scored from the session's first and last regular
+  minute bars, never from a daily bar the venue may still be building, and only after 16:30 ET
+  (the free tier's REST feed is 15 minutes delayed). A call is graded once; a wrong grade is a
+  bug, not something to re-score away.
+- **The model may only name what it was shown.** `ValidateAgainst` rejects a call or watch note on
+  a symbol outside the indexes and watchlist; the threshold must be > 0; invalidation is required.
+  A briefing whose reply fails validation is archived (raw) and reported as failed, never reused
+  as if valid.
+- **Headlines are data.** Third-party text (news, summaries, source warnings) is delimited in the
+  prompt and framed as data, not instructions; warnings are clipped to 120 characters in the
+  prompt (the full text stays in the archived input), so a provider's response body can never
+  become a paragraph the model reads.
+
 ### Paper Is Not Real, and the Code Says So
 - `tape init` sets the ledger to a fundable size ($5,000 default). Alpaca's $100k paper balance is
   labelled "ignored by stats" anywhere it is shown.

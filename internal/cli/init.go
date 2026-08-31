@@ -12,9 +12,14 @@ import (
 
 	"github.com/trapp01/tape/internal/config"
 	"github.com/trapp01/tape/internal/llm"
+	"github.com/trapp01/tape/internal/playbook"
 )
 
-const alpacaKeysURL = "https://app.alpaca.markets"
+const (
+	alpacaKeysURL  = "https://app.alpaca.markets"
+	fredKeysURL    = "https://fredaccount.stlouisfed.org/apikeys"
+	finnhubKeysURL = "https://finnhub.io/register"
+)
 
 func newInitCmd() *cobra.Command {
 	var (
@@ -73,7 +78,16 @@ func newInitCmd() *cobra.Command {
 				return err
 			}
 
-			printInitSteps(out, style, cfg, preset, path, dbPath)
+			// A forced init rewrites config, never the playbook: the strategy file
+			// is the user's writing, not tape's.
+			playbookNote := "kept the existing playbook"
+			if err := playbook.WriteDefault(cfg.PlaybookPath()); err == nil {
+				playbookNote = "wrote the default playbook"
+			} else if !fileExists(cfg.PlaybookPath()) {
+				return err
+			}
+
+			printInitSteps(out, style, cfg, preset, path, dbPath, playbookNote)
 			return nil
 		},
 	}
@@ -85,8 +99,8 @@ func newInitCmd() *cobra.Command {
 	return cmd
 }
 
-func printInitSteps(w io.Writer, style styler, cfg config.Config, preset llm.Preset, cfgFile, dbFile string) {
-	fmt.Fprintf(w, "\nconfig   %s\njournal  %s\n", cfgFile, dbFile)
+func printInitSteps(w io.Writer, style styler, cfg config.Config, preset llm.Preset, cfgFile, dbFile, playbookNote string) {
+	fmt.Fprintf(w, "\nconfig   %s\njournal  %s\nplaybook %s (%s)\n", cfgFile, dbFile, cfg.PlaybookPath(), playbookNote)
 	if cfg.Account.Timezone != "" {
 		fmt.Fprintf(w, "timezone %s\n", cfg.Account.Timezone)
 	}
@@ -101,7 +115,12 @@ func printInitSteps(w io.Writer, style styler, cfg config.Config, preset llm.Pre
 	default:
 		fmt.Fprintf(w, "  3. no key needed for %s (%s)\n", preset.Name, preset.BaseURL)
 	}
-	fmt.Fprintln(w, "  4. tape status")
+	fmt.Fprintln(w, "  4. tape status, then tape brief")
+
+	fmt.Fprintln(w, "\nOptional, for the briefing's calendars")
+	fmt.Fprintf(w, "  export FRED_API_KEY=...      economic releases (%s)\n", fredKeysURL)
+	fmt.Fprintf(w, "  export FINNHUB_API_KEY=...   watchlist earnings (%s)\n", finnhubKeysURL)
+	fmt.Fprintln(w, "  Without them the briefing still runs and names the calendars it went without.")
 
 	if cfg.LLM.Model == "" {
 		fmt.Fprintf(w, "\n%s has no default model: set llm.model in %s (see %s)\n", preset.Name, cfgFile, preset.Docs)
