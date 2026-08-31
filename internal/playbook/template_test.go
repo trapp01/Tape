@@ -80,10 +80,21 @@ func TestDefaultTemplateCitesEverySetup(t *testing.T) {
 			t.Errorf("the setups never state %q", line)
 		}
 	}
-	for _, rule := range []string{"0.5%", "3 open positions", "averaging down", "Flat by the close", "two stopped-out losses"} {
+	for _, rule := range []string{"0.5%", "3 open positions", "averaging down", "Flat by the close", "two positions close at a loss"} {
 		if !strings.Contains(DefaultTemplate, rule) {
 			t.Errorf("the risk rules never state %q", rule)
 		}
+	}
+	// Every setup states the same size rule, because Go enforces one cap and a
+	// playbook line promising half of it is a rule nothing keeps.
+	if n := strings.Count(DefaultTemplate, "- Size: the per-trade risk in Risk rules, and no more."); n != 3 {
+		t.Errorf("the template states the per-trade size rule %d times, want once per setup", n)
+	}
+	if strings.Contains(DefaultTemplate, "half the per-trade risk") {
+		t.Error("the template promises a half-size rule Go does not enforce")
+	}
+	if !strings.Contains(DefaultTemplate, "N-rules are no-trade conditions and cannot be cited as a setup") {
+		t.Error("the template never says an N-rule is not an entry setup")
 	}
 	if !strings.HasSuffix(DefaultTemplate, "\n") {
 		t.Error("the template does not end with a newline")

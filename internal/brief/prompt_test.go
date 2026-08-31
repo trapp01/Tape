@@ -9,6 +9,7 @@ import (
 	"github.com/trapp01/tape/internal/calendar"
 	"github.com/trapp01/tape/internal/market"
 	"github.com/trapp01/tape/internal/regime"
+	"github.com/trapp01/tape/internal/risk"
 )
 
 // goldenInput is deliberately small: the point is the exact shape of the render,
@@ -22,6 +23,8 @@ func goldenInput(t *testing.T) Input {
 		Timezone:    "America/Edmonton",
 		Mode:        "paper",
 		LedgerCash:  5000,
+		Equity:      5000,
+		Limits:      goldenLimits(),
 		NextOpen:    time.Date(2026, 8, 28, 7, 30, 0, 0, loc),
 		NextClose:   time.Date(2026, 8, 28, 14, 0, 0, 0, loc),
 		Indexes: []SymbolRead{
@@ -53,6 +56,19 @@ func goldenInput(t *testing.T) Input {
 	}
 }
 
+// goldenLimits is the shipped default risk section.
+func goldenLimits() risk.Limits {
+	return risk.Limits{
+		RequireStop:                 true,
+		PerTradePct:                 0.5,
+		MaxPositions:                3,
+		MaxDailyLosses:              2,
+		NoEntriesBeforeCloseMinutes: 30,
+		MinRewardRisk:               1.5,
+		MaxEntryDeviationPct:        5,
+	}
+}
+
 const goldenPrompt = `TIME
   now      2026-08-28 06:52 MDT
   session  closed, next open 2026-08-28 07:30 MDT, next close 2026-08-28 14:00 MDT
@@ -60,6 +76,15 @@ const goldenPrompt = `TIME
 ACCOUNT
   mode     paper
   cash     $5000.00
+  equity   $5000.00
+
+RISK LIMITS (enforced in code; you cannot move them)
+  per trade      0.5% of equity, lost at the stop
+  stop           required on every entry
+  max positions  3
+  reward/risk    1.5R or better
+  entry          within 5% of the last price
+  new entries    stop 30 minutes before the close
 
 INDEXES
   SPY    last 512.10  prev close 510.00  +0.41%
@@ -106,7 +131,10 @@ func TestBuildPromptIsDeterministic(t *testing.T) {
 	if user != goldenPrompt {
 		t.Fatalf("user prompt drifted:\n--- got ---\n%s\n--- want ---\n%s", user, goldenPrompt)
 	}
-	for _, want := range []string{"playbook", "threshold_pct null", "falsifiable", "JSON matching the provided schema"} {
+	for _, want := range []string{
+		"playbook", "threshold_pct null", "falsifiable", "JSON matching the provided schema",
+		"Propose zero to three trades", "size nothing", "RISK LIMITS block is enforced in code",
+	} {
 		if !strings.Contains(system, want) {
 			t.Fatalf("system prompt missing %q:\n%s", want, system)
 		}

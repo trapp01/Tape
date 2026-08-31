@@ -35,6 +35,11 @@ type Order struct {
 	FilledQty      int
 	FilledAvgPrice *float64
 	Source         string
+	// ProposalID links an order to the proposal it executes; nil for human orders.
+	ProposalID *int64
+	// ParentOrderID is the venue id of the entry a bracket leg protects; empty
+	// for an order of its own. Legs sharing a parent are one-cancels-other.
+	ParentOrderID string
 	// Mode is "paper" or "live" so a single journal can hold both records apart.
 	Mode        string
 	Note        string
@@ -126,6 +131,69 @@ type Call struct {
 	Close     *float64
 	ActualPct *float64
 	Correct   *bool
+}
+
+// Proposal statuses. A row is written for every idea the model produced, and its
+// status records what happened to it: the trader's decision, a Go rejection, or
+// nothing before the session ended.
+const (
+	ProposalProposed = "proposed"
+	// ProposalSubmitting is the window between the venue accepting an order and
+	// the decision landing. A claim on that window stops a second submission.
+	ProposalSubmitting = "submitting"
+	ProposalTaken      = "taken"
+	ProposalPassed     = "passed"
+	ProposalRejected   = "rejected"
+	ProposalExpired    = "expired"
+	// ProposalUnfilled is a take whose order died without trading a share.
+	ProposalUnfilled = "unfilled"
+)
+
+// Proposal is one sized trade idea from a briefing and what became of it.
+type Proposal struct {
+	ID         int64
+	BriefingID int64
+	Mode       string
+	Day        string
+	// Index is the 1-based position within the briefing, the number the trader
+	// types in `tape take N`.
+	Index        int
+	Symbol       string
+	Side         string
+	SetupID      string
+	Entry        float64
+	Stop         float64
+	Target       float64
+	Qty          int
+	RiskUSD      float64
+	Thesis       string
+	Invalidation string
+	Confidence   string
+	Status       string
+	// Reason holds the trader's pass reason or the Go rejection.
+	Reason    string
+	DecidedAt *time.Time
+	// OrderID links a taken proposal to the order that was submitted for it.
+	OrderID *int64
+	// TakenQty and TakenRiskUSD are what the trader actually submitted, which
+	// `take --qty` may lower below Qty and RiskUSD. Nil when they match.
+	TakenQty     *int
+	TakenRiskUSD *float64
+	CreatedAt    time.Time
+}
+
+// Refusal is one guardrail refusal, kept so the record shows every time a rule
+// had to say no.
+type Refusal struct {
+	ID     int64
+	Mode   string
+	Day    string
+	At     time.Time
+	Rule   string
+	Symbol string
+	Detail string
+	// Source is who attempted the order: human, proposal, or eod.
+	Source string
 }
 
 type DayRecap struct {

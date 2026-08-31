@@ -16,11 +16,14 @@ itself, is worth more than one that claims to know where the market is going.** 
 no evidence behind it. The first produces the one thing a beginner cannot get any other way — an
 honest record.
 
-Phases 0 and 1 ship today: config, the Alpaca paper adapter, the SQLite journal, the cost model,
-the provider-agnostic model layer, manual orders end to end, and the morning briefing — `tape
-brief` reads the market, applies a playbook you wrote, and files one falsifiable call that `tape
-score` grades against the session that followed. 443 tests, none of which touch the network. There
-are no trade proposals yet.
+Phases 0, 1 and 2 ship today: config, the Alpaca paper adapter, the SQLite journal, the cost model,
+the provider-agnostic model layer, manual orders end to end, the morning briefing, and the co-pilot
+— `tape brief` reads the market, applies a playbook you wrote, files one falsifiable call that
+`tape score` grades against the session that followed, and puts zero to three trade ideas on a
+slate you take or pass one at a time. Every idea is sized in Go, checked against limits the model
+cannot argue with, and journaled whether or not you trade it. 676 tests, none of which touch the
+network. What is not built is the mirror: counterfactual scoring of the passes, `tape stats`, and
+the weekly retro.
 
 Note: tape has no live-broker code path. `tape mode live` is refused, and no flag, environment
 variable, or config value changes that.
@@ -133,8 +136,9 @@ Two loops. The second one is why this is more than a chat wrapper.
 state, regime, what the calendar is about to do, and a falsifiable call of the day — then proposes
 zero to three trades, each tied to a named rule in the playbook and each carrying its stop, target
 and size before it carries anything else. You take or pass. Taken orders go to the broker.
-Everything goes into the journal. The briefing and the call are built and graded today; the
-proposals are Phase 2 and the weekly retro is Phase 3.
+Everything goes into the journal. The briefing, the call and the proposals are built today, and the
+call is graded today; the counterfactual scoring of what you passed on and the weekly retro are
+Phase 3.
 
 **Learning.** Nightly, the journal is scored against what actually happened. Weekly, the model reads
 its own scored record and proposes diffs to `playbook.md`, which you review like a pull request.
@@ -166,10 +170,11 @@ may override", it is a bug.
 **It never sees a secret.** Keys resolve from the environment at the edge of the process and go into
 no prompt, no log, and no journal row.
 
-Phase 1 built the briefing inside those rules; Phase 2 builds the proposal path against them. The
-first and fourth are structural today, and the second is why a call's threshold, the move it is
-graded on, and the verdict are all computed in Go from the session's own bars rather than read out
-of the reply.
+The briefing and the proposal path are both built inside those rules. The first and fourth are
+structural. The second is why a call's threshold, the move it is graded on and the verdict are all
+computed in Go from the session's own bars rather than read out of the reply — and why a proposal's
+share count, risk dollars and reward/risk come from `internal/risk` and the ledger, never from the
+model's JSON.
 
 ## Why it's built this way
 
@@ -197,9 +202,14 @@ price is kept; the modeled price is what the stats use. On the ten-share round t
 the paper venue's answer is $100.00 and tape's is $96.92 — 3% of the move gone on a winner, and all
 of it on a scratch.
 
-**Guardrails are Go, not prompt text.** Phase 0 refuses an invalid order, a sell larger than the
-ledger holds, and a buy the ledger cannot pay for. Each refusal names the rule and quotes its
-numbers, because a refusal the trader cannot verify is a refusal they will work around:
+**Guardrails are Go, not prompt text.** Eleven rules run before an order can leave the machine, and
+they are the same eleven whether the order came from `tape buy` or from `tape take` — an entry with
+no stop, a target under the entry, an invalid order, a short, a trade over the risk cap, one
+position too many, an average-down, an entry inside the flat-by-close window, a day already halted
+on losses, a level the tape has moved away from, and a buy the ledger cannot pay for. They are
+listed with what each one refuses under [The co-pilot](#the-co-pilot). Each refusal names the rule
+and quotes its numbers, because a refusal the trader cannot verify is a refusal they will work
+around:
 
 ```
 tape: buy 16 NVDA: ledger cash $500.00 < cost $2,056.59 for 16 NVDA at $128.41 (rule: no overspend)
@@ -220,17 +230,19 @@ And `buy` and `sell` reconcile the journal against the venue before the guardrai
 stop that fired since your last command is seen. The cost of that: a venue outage refuses new
 orders rather than trading on a stale record, which is the right way round.
 
-The reservation rule has a sharp edge worth knowing before it surprises you. A bracket's stop and
-target are both open sells, and each reserves the full position, so a ten-share bracketed long
-reserves twenty shares and a manual `tape sell AAPL 10` is refused:
+A bracket's stop and target are both open sells over the same position, and only one of them can
+ever trade, so the reservation counts the larger leg once rather than both. An exit is never
+blocked by the bracket that opened it: a manual sell that the resting legs still stand in front of
+cancels them first and says so, and the cancellations are journaled like any other order.
 
 ```
-tape: sell 10 AAPL: selling 10 AAPL but the ledger holds 10 with 20 already committed to open sells, leaving -10 (rule: no shorting)
+$ tape sell NVDA 10
+
+cancelled 2 resting bracket legs for NVDA
 ```
 
-Only one leg can ever trade, so counting both is stricter than reality — and strict is the correct
-direction for a rule whose failure mode is an accidental short. Cancel the bracket to free the
-shares: `eod` does it, or the broker's UI, because there is no `tape cancel` yet.
+Selling more than the ledger holds is still a short, and still refused. `tape cancel 4` and
+`tape cancel --all` take resting orders off the books on their own.
 
 **The brain is replaceable.** `llm.Provider` is one `Complete` call taking a system prompt, messages
 and an optional JSON schema. Anthropic is native through the official SDK, the local Claude Code CLI
@@ -260,8 +272,9 @@ building one is a deliberate future commit, not a configuration mistake somebody
 
 ## What Tape is not
 
-**Not an auto-trader.** There is no unattended loop and no auto-take flag. Every order comes from a
-command you ran. Autonomy is something the record can earn later, one guardrail at a time.
+**Not an auto-trader.** There is no unattended loop and no auto-take flag, not even for a
+high-confidence idea. The model proposes; only `tape take` transmits. Autonomy is something the
+record can earn later, one guardrail at a time.
 
 **Not a signal service.** It is not going to tell you what will go up. The call of the day exists as
 a scored experiment; if it turns out to have predictive value the stats will say so, and selling
@@ -291,9 +304,10 @@ Run it in paper mode until you have enough entries in the journal to judge it. T
 reason the journal exists — a proposal you did not record is a proposal you cannot grade — and it is
 why real money sits behind a gate with the criteria fixed in advance.
 
-Read the source before you trade on anything it says. It is about 10,500 lines of Go, and the two
-parts that decide whether the numbers mean anything are small enough to read in a sitting:
-`internal/costs` is 121 lines and `internal/trading/rules.go` is 135.
+Read the source before you trade on anything it says. It is about 13,600 lines of Go, and the parts
+that decide whether the numbers mean anything are small enough to read in a sitting: `internal/costs`
+is 121 lines, `internal/risk` — all of the position sizing — is 156, and the guardrails in
+`internal/trading/rules.go` and `internal/trading/entry_rules.go` are 214 and 222.
 
 ## Install
 
@@ -345,25 +359,30 @@ playbook somewhere other than `~/.tape`, which is how the test suite keeps runs 
 `init` writes `playbook.md` once and never again. A second `init --force` rewrites the config and
 leaves the playbook alone, because the strategy file is yours.
 
-The ritual is three commands and whatever you decide to do between the first two:
+The ritual is `brief` before the open, one decision on each idea it puts up, and `eod` at the close:
 
 ```sh
 export ALPACA_API_KEY=... ALPACA_API_SECRET=...
 export ANTHROPIC_API_KEY=...      # or whichever provider you configured
 
-tape brief           # the read, and one call that gets graded — before the open
-                     # then take the trades yourself, or none
-tape eod             # flatten everything and recap the day
-tape score           # grade the call, after 16:30 ET
+tape brief                        # the read, one graded call, and 0-3 sized ideas — before the open
+tape take 1                       # trade idea 1 as a bracket, at the size Go computed
+tape pass 2 --reason "gap already ran"
+tape eod                          # flatten, expire what you never decided, recap the day
+tape score                        # grade the call, after 16:30 ET
 ```
 
+`take` and `pass` are the whole decision surface: there is no auto-take flag, and a pass will not
+go through without a reason, because the pass side is what gets counterfactually scored later.
+`tape why 1` prints everything behind an idea, sizing arithmetic included, before you commit to it.
+
 `eod` grades the call itself when you run it late enough, so `tape score` is for the days you
-closed out early. The rest of Phase 0 is still there when you want it:
+closed out early. The manual orders are still there when you want them:
 
 ```sh
-tape status          # ledger, broker balance, market clock
-tape buy SPY 1       # market order, journaled and cost-modeled
-tape pos             # open positions from the journal, priced live
+tape status                       # ledger, broker balance, risk walls, market clock
+tape buy SPY 1 --stop 511.00      # --stop is required; journaled and cost-modeled
+tape pos                          # open positions from the journal, priced live
 ```
 
 The blocks below are real output, rendered through the in-memory venue the tests use rather than a
@@ -371,7 +390,7 @@ live Alpaca account — see [Status](#status). Every number in them comes from t
 real fill takes.
 
 ```console
-$ tape buy AAPL 10 --note "range break"
+$ tape buy AAPL 10 --stop 98 --note "range break"
 
 [paper] buy 10 AAPL
 
@@ -379,11 +398,16 @@ $ tape buy AAPL 10 --note "range break"
   order       buy 10 AAPL market
   status      filled
   broker id   fake-1
+  stop        $98.00
 
 Fills
 QTY  RAW      MODELED  COMMISSION  FEES   COST
 10   $100.00  $100.05  $1.00       $0.00  $1,001.50
 ```
+
+The stop is not optional. Ten shares stopping two dollars lower risks $20, which fits under the
+$25 the 0.5% per-trade cap allows on a $5,000 ledger; a stop at $95 would risk $50 and be refused
+before it reached the venue.
 
 `RAW` is what the venue reported. `MODELED` is that price plus five basis points of slippage against
 you. The $1.00 is the commission minimum: at half a cent a share the ten-share order earns five
@@ -405,15 +429,16 @@ $ tape eod
 [paper] end of day
 
 Flatten
-  orders cancelled  0
+  orders cancelled  1
   positions closed  1
   fills recorded    1
-  closed sell 10 AAPL (journal #2, filled)
+  closed sell 10 AAPL (journal #3, filled)
 
 Recap 2026-08-30
-  orders                  2
+  orders                  3
   trades closed           1
   wins / losses           1 / 0
+  refusals today          0
   gross                   +$98.95
   costs on closed trades  $2.03
   costs on today's fills  $2.03
@@ -421,6 +446,11 @@ Recap 2026-08-30
 
 flat.
 ```
+
+Three orders for one round trip: the entry, the stop leg the bracket rested behind it — journaled
+from birth, so a stop that fires is a fill tape can see — and the sell that closed it. `orders
+cancelled` is that stop leg coming off the books on the way to flat. `refusals today` counts the
+guardrails that had to say no; the gate asks for a month of zeroes there.
 
 The stock moved from $100 to $110 and the paper venue's arithmetic says $100.00. Tape says $96.92.
 That difference is the entire reason `internal/costs` was the first package written.
@@ -439,10 +469,12 @@ $ tape sell AAPL 10
 
 [paper] sell 10 AAPL
 
-  journal id  #2
+cancelled 1 resting bracket leg for AAPL
+
+  journal id  #3
   order       sell 10 AAPL market
   status      filled
-  broker id   fake-2
+  broker id   fake-3
 
 Fills
 QTY  RAW      MODELED  COMMISSION  FEES   NET
@@ -455,10 +487,11 @@ you.
 
 ## The briefing
 
-`tape brief` is the morning ritual and the whole of Phase 1. It reads the market, hands the model
-everything it collected together with your playbook, and archives the reply with one call that gets
-graded after the close. It proposes no trades and places no orders. The point of doing it in this
-order is to find out whether the reads are worth anything before anything is riding on them.
+`tape brief` is the morning ritual. It reads the market, hands the model everything it collected
+together with your playbook, and archives the reply with one call that gets graded after the close.
+It places no orders — the slate it prints is covered under [The co-pilot](#the-co-pilot) and waits
+on a command you type. The call was built before the proposals were, so that the question of whether
+the reads are worth anything gets asked before anything is riding on them.
 
 **What the model is shown**, all of it archived verbatim next to the reply so an old briefing can be
 re-read against what actually happened:
@@ -474,7 +507,9 @@ re-read against what actually happened:
 - The watchlist with quotes, up to five headlines per symbol and fifteen market-wide ones, each
   story's summary clipped to 300 characters.
 - The session's top gainers, losers and most actives from Alpaca's screener.
-- The ledger's cash, the venue clock, and the list of sources that were unreachable.
+- The ledger's cash and equity, the venue clock, and the list of sources that were unreachable.
+- The risk limits, under a heading that says they are enforced in code and cannot be moved, so the
+  model plans inside the walls rather than being told off by them afterwards.
 - `playbook.md`, verbatim, as the last block of the message.
 
 All of that has to fit 60,000 characters. Over the cap, the prompt drops to two headlines a symbol,
@@ -484,24 +519,31 @@ run.
 
 **What it must return** is JSON against a strict schema: a market read, a regime note, a calendar
 note, at most twelve watchlist notes each carrying a bias of bullish, bearish or neutral, at most
-five risks, and one call of the day. The call is an instrument, a direction of up, down or flat, a
-threshold in percent — or null to take the desk's configured default — a rationale that names the
-playbook rule it rests on, and an invalidation: the one observation that would prove it wrong before
-the close. `threshold_pct` is nullable on purpose. A required numeric field with no way to say
-"I don't know" is an instruction to fabricate, which is the failure mode
-[docs/models.md](docs/models.md) is written around.
+five risks, at most three trade proposals, and one call of the day. The call is an instrument, a
+direction of up, down or flat, a threshold in percent — or null to take the desk's configured
+default — a rationale that names the playbook rule it rests on, and an invalidation: the one
+observation that would prove it wrong before the close. `threshold_pct` is nullable on purpose. A
+required numeric field with no way to say "I don't know" is an instruction to fabricate, which is the
+failure mode [docs/models.md](docs/models.md) is written around.
+
+The proposals list may be empty, and the prompt says so in as many words: when the regime posture or
+an `N1` condition says stand down, zero ideas is the right answer and the watchlist note on the
+symbol it would otherwise have traded is where the reason goes. Nothing about the slate is scored on
+length.
 
 ### The rules that make the grade mean something
 
 Every one of these is a refusal somewhere in the code, and each exists because the honest version of
 the question has an answer that flatters the model less.
 
-**Calls lock at 09:30 Eastern.** A second `tape brief` on the same session reprints the archive
-rather than spending another call on the same morning. `--force` archives a fresh briefing, and
-before the bell it replaces the call; after the bell the session's first call stands and the footer
-says so, because a prediction about a session already in progress is not a prediction. An evening
-run is a call on the *next* session, keyed to that day, and the next morning reads it back with the
-time it was written on it.
+**Calls lock at 09:30 Eastern, and so does the slate.** A second `tape brief` on the same session
+reprints the archive rather than spending another call on the same morning. `--force` archives a
+fresh briefing, and before the bell it replaces the call and expires the earlier slate; after the
+bell the session's first call and first slate both stand and the footer says so, because a
+prediction about a session already in progress is not a prediction, and the ideas you have been
+deciding on all morning are not something a re-run gets to swap out underneath you. An evening run
+is a call and a slate on the *next* session, keyed to that day, and the next morning reads them back
+with the time they were written on them.
 
 **Only complete sessions are graded.** A call is scored from the first and last regular one-minute
 bars of its own session, never from a daily bar the venue may still be building, and not before
@@ -514,9 +556,10 @@ reads as the previous day in every zone west of it — including the one I trade
 session is this" decision goes through one function in `America/New_York`. My own timezone is for
 display and day recaps.
 
-**The model may only name what it was shown.** A call or a watch note on a symbol outside the
-indexes and the watchlist is rejected before anything is filed, as is a lowercase ticker, a missing
-invalidation, a missing rationale, or a threshold at or below zero or above 5%.
+**The model may only name what it was shown.** A call, a watch note or a proposal on a symbol
+outside the indexes and the watchlist is rejected before anything is filed, as is a lowercase
+ticker, a missing invalidation, a missing rationale, a threshold at or below zero or above 5%, a
+proposal that repeats a symbol, and a proposal citing a setup id the playbook does not define.
 
 **A reply that fails validation is archived and refused.** The raw text lands in the journal, the
 command exits non-zero naming the briefing id, and no call is filed. Re-reading that briefing later
@@ -546,6 +589,13 @@ REGIME   uptrend, low vol (SPY 512.10 above 20d 505.30 and 50d 498.80; 20d vol 1
 CALL     SPY up ≥0.3% open→close   [✓ +0.42%]
          M2: price above the 20d.
          invalid if: SPY trades below 509.80.
+PROPOSALS (2)
+  #1  LONG NVDA — M2 momentum continuation above prior high
+      entry 128.40  stop 126.90  target 131.40  size 16 sh (~$2,054 · risks $24 = 0.5%)  2.0R
+      thesis: Holds the breakout shelf.
+      invalid if: Loses 126.90 on volume.   confidence: medium
+  #2  LONG COST — R1 range-edge mean reversion   ✗ rejected: reward/risk 1.2 is under the 1.5 minimum (rule: reward/risk)
+act: tape take 1 · tape pass 1 --reason "…" · tape why 1
 CALENDAR
   08:30     CPI (high)
          CPI is the session's only scheduled risk.
@@ -559,9 +609,11 @@ briefing #12 · fake-model-1 · 41.2k in / 1.1k out · 38s · est. $0.12
 
 Computed facts sit on the label lines and the model's words sit underneath them, so it is always
 obvious which is which. `CALL` carries its verdict inline — `[scored after close]` until the session
-is read, then the mark and the actual move. `SOURCES` is what the briefing was written without, and
-it is on the screen rather than in a log because a read built without the economic calendar is a
-different read.
+is read, then the mark and the actual move. Under `PROPOSALS`, the sizes and the R multiple are
+computed here and the thesis is the model's; `#2` was refused before the trader ever saw it, and is
+still on the screen and on the record. `SOURCES` is what the briefing was written without, and it is
+on the screen rather than in a log because a read built without the economic calendar is a different
+read.
 
 The archive is a command too:
 
@@ -581,12 +633,154 @@ model would have been sent, character count and all, without spending a call.
 writes to it. `init` seeds it once with something you can actually run against: a posture for each
 regime the classifier can produce, four setups with ids — `M1` gap-and-go continuation, `M2`
 momentum continuation above the prior high, `R1` range-edge mean reversion, and `N1`, the
-conditions that end the discussion for a symbol — a set of risk rules that restate what Go will
-enforce in Phase 2, and the rules for the call of the day.
+conditions that end the discussion for a symbol — a set of risk rules that restate what Go enforces,
+and the rules for the call of the day.
+
+A proposal has to cite one of those ids, and `N1` is not one of them: an N-rule is a no-trade
+condition, so citing it would be arguing for the trade it forbids. Restating the risk rules in the
+file is what lets the briefing plan inside them; changing a number there does not move the wall,
+which lives in `[risk]` and in Go.
 
 It is a starting point and not a recommendation. It is in the repo so the first briefing has
 something to cite, and the whole design of the learning loop is that you change it, in git, against
 a scored record. `tape playbook` prints the one you have.
+
+## The co-pilot
+
+The briefing ends with a slate: zero to three trade ideas you take or pass one at a time. Nothing on
+it reaches a venue until you type `tape take N`. There is no auto-take flag and no unattended loop,
+and the model has no code path to either.
+
+**A proposal is nine fields and every one of them is required.** A symbol the briefing actually
+showed — an index ETF or something on your watchlist, nothing else. A side, which is `long`, because
+v1 does not short. A setup id the playbook defines, like `M2`; an id starting with `N` is a no-trade
+condition and is refused, since a proposal citing one argues for the trade its own rule forbids. An
+entry, a stop below it and a target above it, all three present, because an idea without its exit is
+a watchlist note. A thesis, and an invalidation: the one observation that would say this is not
+working. And a confidence of low, medium or high — the model's own read, and the only field that
+changes nothing at all. It does not scale the size. It is on the record so the scoring can find out
+later whether it ever meant anything.
+
+**Size is never the model's.** The model supplies prices; `risk.SizeWithin` supplies the share count,
+from the ledger and the limits:
+
+```
+budget  = equity × risk.per_trade_pct / 100
+shares  = floor(budget ÷ (entry − stop))
+ceiling = free cash × 0.98, and the position is trimmed to what that buys
+```
+
+Free cash is the ledger's cash less what open orders already claim; the 2% left over absorbs the
+slippage and the commission the entry price does not carry but the ledger pays. Risk bounds the
+loss, cash bounds the bill, and a $5,000 ledger cannot buy $8,000 of stock however good the idea is.
+A size the risk budget alone would have allowed but the cash ceiling cut is labelled `cash-capped`
+on the slate, so it is never a mystery why sixteen shares became nine. `tape why N` prints the whole
+calculation.
+
+Two limits are checked before an idea is sized at all: the target has to pay at least
+`risk.min_reward_risk` times what the stop costs, and the entry has to sit within
+`risk.max_entry_deviation_pct` of the price the briefing was shown that symbol at. An idea that
+fails either — or that the risk budget cannot buy a single share of — is still written to the
+journal, as `rejected`, with the rule text on the row. Nothing the model said is dropped, and
+nothing it said is sized by it.
+
+This is the slate half of the golden further up — `TestBriefRenderGolden` in
+`internal/cli/briefrender_test.go`, the renderer pinned byte for byte against an in-memory venue, a
+fixed clock and a canned reply, with colour off:
+
+```
+PROPOSALS (2)
+  #1  LONG NVDA — M2 momentum continuation above prior high
+      entry 128.40  stop 126.90  target 131.40  size 16 sh (~$2,054 · risks $24 = 0.5%)  2.0R
+      thesis: Holds the breakout shelf.
+      invalid if: Loses 126.90 on volume.   confidence: medium
+  #2  LONG COST — R1 range-edge mean reversion   ✗ rejected: reward/risk 1.2 is under the 1.5 minimum (rule: reward/risk)
+act: tape take 1 · tape pass 1 --reason "…" · tape why 1
+```
+
+`$24 = 0.5%` is the point of the whole block: what the stop costs, and what fraction of the account
+that is. The `2.0R` is what the target pays for it. Both are computed here, from the prices above
+them.
+
+### The slate, and what becomes of each idea
+
+Every idea gets exactly one ending:
+
+```
+proposed ──┬─► taken ──► unfilled        the order died without trading a share
+           ├─► passed                    you declined it, with a reason
+           ├─► rejected                  a rule refused the idea itself
+           └─► expired                   the session ended and nobody decided
+```
+
+Between `proposed` and `taken` sits `submitting`. `take` claims the idea before it sends anything, so
+a crash between the venue accepting an order and the decision landing leaves a claim rather than a
+takeable proposal — and a claimed idea can never be taken twice. `tape proposals --reconcile` closes
+that window from the record without sending anything: the order at the venue is already the trade. A
+claim released by a rule that only refused today goes back to `proposed`, because the idea survived
+the refusal.
+
+| Command | What it does |
+| --- | --- |
+| `tape proposals` | the session's slate and what became of each idea; `--day`, `--reconcile` |
+| `tape take N` | submits idea N as a bracket — a limit at its entry with the stop and target attached — at the size Go computed. `--qty` may lower that size, never raise it |
+| `tape pass N --reason "…"` | records the veto and why. The reason is required |
+| `tape why N` | everything behind one idea: levels, thesis, invalidation, status, and the sizing arithmetic |
+| `tape cancel ID...` | takes resting orders off the books; `--all` cancels everything working |
+
+The tests pin what `take` prints on the fake venue — `[paper] take 1`, then
+`taken: proposal #1 NVDA 16 sh → order #1` — and what `why 1` shows under
+`Sizing (computed in Go, never by the model)`: `$5,000.00 equity × 0.5% = $25.00`, then
+`$25.00 / ($120.60 − $119.10) = 16, rounded down`. When `--qty` lowered a take, the `proposals`
+table carries both numbers, `16→4` and `$24.00→$6.00`, because the record has to say what was
+traded next to what was sized.
+
+**The slate locks at the open, like the call.** A forced re-run before 09:30 Eastern expires the
+earlier slate and files a new one. After the bell the earlier slate stands and the new briefing is a
+second read, not a second set of trades. And the slate day is the *session* day: an evening briefing
+is a slate on tomorrow, and `take`, `pass`, `why`, `proposals` and `eod` all resolve `N` against
+that session rather than against your calendar date, so the slate that printed is the slate you act
+on.
+
+**`eod` closes the record as well as the positions.** It expires every idea nobody decided — an
+undecided proposal is not one you can take tomorrow, it is one the session ran out on — and, once
+the venue has been cancelled and flattened, it marks any take whose order died without trading a
+share as `unfilled`. That one was never a trade, and Phase 3 must not score it as one.
+
+### The guardrails
+
+Eleven rules run in Go before an order can leave the machine. An entry clears ten of them, and `tape
+take` and `tape buy` take exactly the same path through them. A sell clears the two that can apply
+to an exit. Each refusal names the rule and its numbers and is written to the `refusals` table,
+which is where "zero guardrail breaches in the final month" gets counted from.
+
+The column that matters is the last one. A rule that refuses a fact about the *idea* decides it: the
+numbers will not change, so the proposal is marked `rejected` and is done. A rule that refuses
+today's *circumstances* decides nothing — the proposal stays open and only the refusal is recorded,
+because a position limit that lifts in an hour is not a verdict on the trade.
+
+| Rule | Refuses | Verdict on the idea |
+| --- | --- | --- |
+| valid order | an empty symbol, a non-positive quantity, a limit price of zero, an unknown side | intrinsic — rejects it |
+| no entry without a stop | a buy with no stop, a stop of zero, or a stop at or above the entry | intrinsic — rejects it |
+| target above entry | a take-profit at or below the price the position opens at | intrinsic — rejects it |
+| no shorting | a sell larger than the ledger holds free of what resting sells already claim | intrinsic — rejects it |
+| risk cap | a trade that would lose more than `per_trade_pct` of ledger equity at its stop | situational — leaves it open |
+| max positions | one more open position than `max_positions`, counting pending entries; adding to a symbol already held takes no new slot | situational — leaves it open |
+| no averaging down | a second entry below the average already paid for that symbol | situational — leaves it open |
+| flat by close | a new entry inside `no_entries_before_close_minutes` of the bell | situational — leaves it open |
+| daily halt | any new entry once `max_daily_losses` positions have closed the day at a gross loss | situational — leaves it open |
+| stale entry | an entry more than `max_entry_deviation_pct` from the last price, or one the tape has already traded through its own stop | situational — leaves it open |
+| no overspend | a buy costing more than ledger cash less what open orders already claim, priced with the cost model | situational — leaves it open |
+
+The halt counts *positions*, not exits. Scaling out of one winner in three clips is not three
+losses, and a position that nets negative only because the commission floor landed twice was not a
+losing read — so neither ends the day.
+
+**An exit is always allowed.** Sells run none of the entry rules, and a sell blocked only by the
+bracket legs resting over its own shares cancels those legs first and says so. A rule that traps you
+in a position is worse than the one it enforces. Selling more than the ledger holds is still a
+short, and still refused.
 
 ## Configuration
 
@@ -634,6 +828,15 @@ call_threshold_pct = 0.3  # the move a call must clear when it leaves its own th
 news_lookback_hours = 18  # 0 turns news off rather than asking for stories since right now
 movers_top = 10           # 0 skips the screener
 calendar_days = 3         # how far ahead the calendar looks
+
+[risk]                    # the walls; the model is shown them and cannot move them
+require_stop = true       # every entry carries its exit, `tape buy` included
+per_trade_pct = 0.5       # share of ledger equity one trade may lose at its stop. Must be in (0, 5]
+max_positions = 3         # open positions plus pending entries. At least 1
+max_daily_losses = 2      # positions closed at a gross loss before the day is over. At least 1
+no_entries_before_close_minutes = 30   # no new entries this close to the bell
+min_reward_risk = 1.5     # smallest target, in multiples of the stop distance. At least 1
+max_entry_deviation_pct = 5.0          # how far a proposed entry may sit from the last price
 ```
 
 The SEC fee and the FINRA TAF are not in the file. They are not yours to choose, so they live in
@@ -655,6 +858,12 @@ SPY  QQQ  AAPL  MSFT  NVDA  AMZN  GOOGL  META
 `call_threshold_pct` will not take a zero. A zero threshold makes an unchanged close count as both
 up and down and never flat, which is a call that cannot be wrong — the same reason a negative cost
 is refused two blocks up.
+
+The `[risk]` walls will not go to zero either. `per_trade_pct` has to sit inside `(0, 5]`,
+`max_positions` and `max_daily_losses` at one or more, `min_reward_risk` at one or more, and
+`max_entry_deviation_pct` above zero. The gate is measured *inside* these walls, so a wall widened
+to nothing flatters every stat it feeds. `require_stop` is the one you can turn off, and turning it
+off is a decision to trade without a bounded loss.
 
 Setting `slippage_bps = 0` and `commission_min = 0` will make paper look better. It will also make
 every number tape produces a lie, which is the one thing this repo is built not to do.
@@ -695,16 +904,16 @@ them against this specific workload — one call a morning, up to 60,000 charact
 strict JSON out — with prices, long-context benchmark scores, latency budgets and structured-output
 guarantees. The headline is Claude Opus 5 for quality, Gemini 3.7 Flash for value, and GLM-5.3-Flash
 for almost nothing at all — and the spread between the best and the cheapest sane option is about
-$93 a year, at prices worked out on a prompt four times the size Phase 1 actually sends. At one call
-a day, optimise for the briefing being right, not for the bill.
+$93 a year, at prices worked out on a prompt four times the size tape actually sends. At one call a
+day, optimise for the briefing being right, not for the bill.
 
 ## Commands
 
 ```
 tape init                write config.toml, the journal, and the default playbook
-tape status              ledger, broker balance (labelled ignored), and the market clock
+tape status              ledger, broker balance (labelled ignored), the risk walls, the clock
 
-tape brief               the morning read and one falsifiable call
+tape brief               the morning read, one falsifiable call, and 0-3 sized ideas
                          --dry-run, --json, --force
 tape briefs              archived briefings, newest first, with --limit
 tape briefs show ID      re-render one from the journal; ID or "today"
@@ -714,12 +923,18 @@ tape watchlist add SYM   add symbols to the watchlist
 tape watchlist rm SYM    remove symbols from the watchlist
 tape playbook            print the strategy file; --write creates it if missing
 
-tape buy SYM QTY         buy, with --limit, --stop, --target, --note
+tape proposals           the session's slate and what became of it; --day, --reconcile
+tape take N              trade idea N as a bracket at the computed size; --qty lowers it
+tape pass N              decline idea N; --reason is required
+tape why N               levels, thesis, invalidation, status, and the sizing arithmetic
+
+tape buy SYM QTY         buy, with --stop (required), --limit, --target, --note
 tape sell SYM QTY        sell shares the ledger holds, with --limit and --note
+tape cancel ID...        cancel resting orders; --all cancels everything working
 tape pos                 open positions from the journal, priced live
 tape orders              journaled orders, with --open and --since
 tape watch SYM...        stream live quotes until Ctrl-C
-tape eod                 flatten everything, recap the day, grade the call
+tape eod                 flatten, expire the undecided ideas, recap the day, grade the call
 
 tape mode [paper]        show or set the mode; `live` is refused
 tape llm ping            check the configured provider answers
@@ -727,8 +942,8 @@ tape llm providers       list the known providers
 tape version             version, platform, and Go toolchain
 ```
 
-`briefs`, `briefs show`, `watchlist` and `playbook` read the config and the journal and nothing
-else, so they work on a machine with no keys on it at all:
+`briefs`, `briefs show`, `proposals`, `why`, `pass`, `watchlist` and `playbook` read the config and
+the journal and nothing else, so they work on a machine with no keys on it at all:
 
 ```console
 $ tape briefs
@@ -736,6 +951,21 @@ $ tape briefs
 [paper] briefs
 
 no briefings yet; run `tape brief`.
+
+$ tape proposals
+
+[paper] proposals
+
+no proposals for 2026-08-30; run `tape brief`.
+```
+
+A pass is scored later, so it has to say why, and the refusal comes before anything else happens:
+
+```console
+$ tape pass 1
+
+[paper] pass 1
+tape: pass 1: --reason is required; a pass is scored later and needs to say why
 ```
 
 Everything that touches the market says plainly when it can't, and says it before doing any work.
@@ -747,16 +977,21 @@ $ tape brief --dry-run
 
 [paper] brief
 tape: alpaca: ALPACA_API_KEY / ALPACA_API_SECRET not set (free paper keys: https://app.alpaca.markets)
+
+$ tape take 1
+
+[paper] take 1
+tape: alpaca: ALPACA_API_KEY / ALPACA_API_SECRET not set (free paper keys: https://app.alpaca.markets)
 ```
+
+`take` is on that list because it places an order. `why` and `pass` are not: reading an idea back
+and declining it are decisions about the record, and the record is local.
 
 Every command prints its mode on the first line, so no output is ever ambiguous about which account
 it was talking about. That tag is `[paper]`, or `[LIVE — locked]` if you hand-edit `mode = "live"`
 into the config: the file can say live, and the banner will still tell you tape is not allowed to
 trade it. There is no bare `[LIVE]` anywhere in the binary. `--config` points at a config file
 anywhere.
-
-There is no `tape cancel` yet. `eod` cancels resting orders on its way to flat, and anything else
-goes through the broker's own UI.
 
 ## Roadmap
 
@@ -767,13 +1002,15 @@ orders end to end. Done.
 classifier, the seeded playbook, and `tape brief` with a scored call of the day, before any trade
 proposals exist. Done.
 
-**Phase 2 — co-pilot.** Schema-validated proposals against the playbook's setup ids, take and pass
-with reasons, and the rest of the Go-enforced guardrails: per-trade risk cap, max open positions, no
-averaging down, flat by close, halt after two stopped-out losses in a day. Next.
+**Phase 2 — co-pilot.** Schema-validated proposals against the playbook's setup ids, sized in Go
+from equity and the stop distance and capped by free cash, `take` and `pass` with reasons, the slate
+lifecycle in the journal, and the rest of the Go-enforced guardrails: per-trade risk cap, max open
+positions, no averaging down, flat by close, stale entries, and a halt once two positions have
+closed the day at a gross loss. Done.
 
 **Phase 3 — the mirror.** Nightly scoring including counterfactuals, `tape stats`, weekly
 `tape retro` with playbook diffs. Then the actual experiment: three or more months of real mornings
-on paper.
+on paper. Next.
 
 **The gate.** No real money moves until every box ticks, and the boxes are written down now so they
 cannot be softened later:
@@ -797,25 +1034,31 @@ reasoning, the evidence behind each decision, and what I cut are in
 Early, and honest about it. Phase 0 is complete and tested: config and env overrides, the Alpaca
 paper adapter, the SQLite journal with FIFO trade matching and day recaps, the cost model, the
 provider-agnostic model layer with its three clients — native Anthropic, OpenAI-compatible, and
-Claude Code — and the trading engine with its Phase 0 guardrails.
+Claude Code — and the trading engine.
 
 Phase 1 is complete and tested too: the read-only market client over Alpaca's snapshots, daily bars,
 one-minute sessions, screener and news; the three calendars; the rule-based regime classifier; the
 seeded playbook; `tape brief` with its prompt assembly, strict schema, Go-side validation and
-archive; `tape briefs`, `tape score`, `tape watchlist` and `tape playbook`. Sixteen commands. 443
-tests, none of which touch the network: venues, calendars and model endpoints are `httptest` servers
-asserting request shape, the briefing and the scorer run against an in-memory feed and a fake model,
-trading runs against an in-memory fake broker, and the journal uses a temp-file SQLite.
+archive; `tape briefs`, `tape score`, `tape watchlist` and `tape playbook`.
+
+So is Phase 2: the proposal half of the schema and its validation, `internal/risk` and the sizing
+that goes with it, the slate lifecycle in the journal, the eleven guardrails and the `refusals`
+table they write to, and `tape proposals`, `tape take`, `tape pass`, `tape why` and `tape cancel`
+around them. Twenty-one commands. 676 tests, none of which touch the network: venues, calendars and
+model endpoints are `httptest` servers asserting request shape, the briefing and the slate run
+against an in-memory feed and a fake model, trading runs against an in-memory fake broker, and the
+journal uses a temp-file SQLite.
 
 Not done, and this is the important part: **tape has never been run against a real Alpaca account, a
 real calendar API, or a real model.** Every adapter is tested against a fake HTTP server and nothing
-more, and no briefing in this repository was written by an actual model — the one further up is a
-test fixture, and it says so. What a real model does with a real morning's headlines, and whether
-its calls beat a coin over three months, is exactly the thing nobody here knows yet.
+more, and no briefing or proposal in this repository was written by an actual model — the ones
+further up are test fixtures, and they say so. What a real model does with a real morning's
+headlines, whether its ideas are worth taking, and whether its calls beat a coin over three months,
+is exactly the thing nobody here knows yet.
 
-There are no trade proposals, no counterfactual scoring, no `tape stats`, and no weekly retro. There
-is no `tape cancel`, so a bracket you want out of has to go through `eod` or the broker. The journal
-schema will change before those land; it is at version 2 today.
+There is no counterfactual scoring, no `tape stats`, and no weekly retro, so the pass side is
+recorded and not yet graded — which is the half that makes the record worth keeping. The journal
+schema will change before those land; it is at version 4 today.
 
 I'm open-sourcing it at this stage because the interesting part is not the trading. It is that the
 honest version of this tool — cost-modeled fills, a ledger that ignores the broker, limits in

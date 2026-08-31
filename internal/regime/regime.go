@@ -43,16 +43,16 @@ func DefaultOptions() Options {
 }
 
 type Regime struct {
-	Trend Trend
-	Vol   Vol
-	Close float64
+	Trend Trend   `json:"trend"`
+	Vol   Vol     `json:"vol"`
+	Close float64 `json:"close"`
 	// SMAShort and SMALong are the moving averages the trend call was made from.
-	SMAShort float64
-	SMALong  float64
+	SMAShort float64 `json:"sma_short"`
+	SMALong  float64 `json:"sma_long"`
 	// RealizedVolPct is annualised close-to-close volatility over VolWindow, in percent.
-	RealizedVolPct float64
+	RealizedVolPct float64 `json:"realized_vol_pct"`
 	// Summary is one line, e.g. "uptrend, low vol (SPY 512.10 above 20d 505.30 and 50d 498.80; 20d vol 11.2%)".
-	Summary string
+	Summary string `json:"summary"`
 }
 
 // Classify labels the regime from daily bars, oldest first. Implemented in classify.go.

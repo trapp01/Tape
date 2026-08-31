@@ -238,7 +238,7 @@ func TestBriefForceReplacesTheCallBeforeTheOpen(t *testing.T) {
 	if !strings.Contains(forced, "briefing #2") {
 		t.Fatalf("--force must archive a second briefing:\n%s", forced)
 	}
-	if !strings.Contains(forced, "replaced the earlier call; calls lock at 09:30 ET") {
+	if !strings.Contains(forced, "replaced the earlier call and expired the earlier slate") {
 		t.Fatalf("--force before the open must replace the call:\n%s", forced)
 	}
 }
@@ -256,7 +256,7 @@ func TestBriefForceKeepsTheCallAfterTheOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("brief --force: %v", err)
 	}
-	if !strings.Contains(forced, "the session's first call stands; calls lock at 09:30 ET") {
+	if !strings.Contains(forced, "the session's first call and slate stand") {
 		t.Fatalf("--force after the open must keep the call:\n%s", forced)
 	}
 }

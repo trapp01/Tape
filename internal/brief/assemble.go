@@ -36,6 +36,7 @@ func Assemble(ctx context.Context, d Deps) (Input, error) {
 		Timezone:    loc.String(),
 		Mode:        d.Mode,
 		Playbook:    d.Playbook,
+		Limits:      d.Limits,
 	}
 
 	if d.Clock != nil {
@@ -51,6 +52,16 @@ func Assemble(ctx context.Context, d Deps) (Input, error) {
 		} else {
 			in.LedgerCash = led.Cash
 		}
+	}
+	if equity, err := d.equity(ctx); err != nil {
+		warn.add("account value unavailable, so nothing can be sized: %v", err)
+	} else {
+		in.Equity = equity
+	}
+	if cash, err := d.cash(ctx); err != nil {
+		warn.add("free cash unavailable, so sizes are not capped on what the account can pay: %v", err)
+	} else {
+		in.FreeCash = cash
 	}
 
 	indexes := dedupeUpper(d.Cfg.IndexSymbols)

@@ -29,9 +29,29 @@ type Config struct {
 	LLM     LLMConfig     `toml:"llm"`
 	Data    DataConfig    `toml:"data"`
 	Brief   BriefConfig   `toml:"brief"`
+	Risk    RiskConfig    `toml:"risk"`
 
 	// Home is the directory the config was loaded from. Not written to the file.
 	Home string `toml:"-"`
+}
+
+// RiskConfig is enforced in Go on every entry, human or proposed. The model
+// plans inside these numbers; it cannot move them.
+type RiskConfig struct {
+	// RequireStop refuses any entry, human or proposed, that has no stop-loss.
+	RequireStop bool `toml:"require_stop"`
+	// PerTradePct is the share of ledger equity one trade may lose at its stop.
+	PerTradePct float64 `toml:"per_trade_pct"`
+	// MaxPositions bounds open positions plus pending entries.
+	MaxPositions int `toml:"max_positions"`
+	// MaxDailyLosses halts new entries once this many trades closed at a loss today.
+	MaxDailyLosses int `toml:"max_daily_losses"`
+	// NoEntriesBeforeCloseMinutes refuses new entries this close to the bell.
+	NoEntriesBeforeCloseMinutes int `toml:"no_entries_before_close_minutes"`
+	// MinRewardRisk is the smallest target distance in multiples of the stop distance.
+	MinRewardRisk float64 `toml:"min_reward_risk"`
+	// MaxEntryDeviationPct bounds a proposed entry's distance from the last price.
+	MaxEntryDeviationPct float64 `toml:"max_entry_deviation_pct"`
 }
 
 // DataConfig holds keys for the optional calendar sources. Each one is also
@@ -118,6 +138,15 @@ func Default() Config {
 			NewsLookbackHours: 18,
 			MoversTop:         10,
 			CalendarDays:      3,
+		},
+		Risk: RiskConfig{
+			RequireStop:                 true,
+			PerTradePct:                 0.5,
+			MaxPositions:                3,
+			MaxDailyLosses:              2,
+			NoEntriesBeforeCloseMinutes: 30,
+			MinRewardRisk:               1.5,
+			MaxEntryDeviationPct:        5,
 		},
 	}
 }
@@ -225,7 +254,34 @@ func (c Config) Validate() error {
 	if err := c.Costs.validate(); err != nil {
 		return err
 	}
-	return c.Brief.validate()
+	if err := c.Brief.validate(); err != nil {
+		return err
+	}
+	return c.Risk.validate()
+}
+
+// validate keeps the risk limits from being loosened into nothing. The gate is
+// measured inside these walls, so a wall set to zero flatters every stat.
+func (r RiskConfig) validate() error {
+	if r.PerTradePct <= 0 || r.PerTradePct > 5 {
+		return fmt.Errorf("risk.per_trade_pct must be within (0, 5], got %v", r.PerTradePct)
+	}
+	if r.MaxPositions < 1 {
+		return fmt.Errorf("risk.max_positions must be at least 1, got %d", r.MaxPositions)
+	}
+	if r.MaxDailyLosses < 1 {
+		return fmt.Errorf("risk.max_daily_losses must be at least 1, got %d", r.MaxDailyLosses)
+	}
+	if r.NoEntriesBeforeCloseMinutes < 0 {
+		return fmt.Errorf("risk.no_entries_before_close_minutes must not be negative, got %d", r.NoEntriesBeforeCloseMinutes)
+	}
+	if r.MinRewardRisk < 1 {
+		return fmt.Errorf("risk.min_reward_risk must be at least 1, got %v", r.MinRewardRisk)
+	}
+	if r.MaxEntryDeviationPct <= 0 {
+		return fmt.Errorf("risk.max_entry_deviation_pct must be positive, got %v", r.MaxEntryDeviationPct)
+	}
+	return nil
 }
 
 func (b BriefConfig) validate() error {

@@ -15,15 +15,15 @@ One request per trading day:
 | | |
 |---|---|
 | Input | headlines, quotes, calendars, and a written strategy playbook, capped at 60,000 characters |
-| Output | at most 4,096 tokens, a **strict JSON object** — the briefing and one falsifiable call today, plus 0–3 proposals with numeric fields from Phase 2 |
+| Output | at most 4,096 tokens, a **strict JSON object** — the briefing, one falsifiable call, and 0–3 trade proposals carrying an entry, a stop and a target |
 | Frequency | ~252 requests a year |
 | Deadline | under ~2 minutes, before the open |
 
 **The costs in this document are a ceiling, not a measurement.** Every per-briefing figure below is
 worked at 60,000 input tokens and 3,000 output, which is what the workload was sized for before it
-was built. What Phase 1 sends is bounded by `brief.MaxPromptChars`, 60,000 *characters* — nearer
-15k tokens, and today a good deal less than that: the system prompt is about 1,800 characters and
-the seeded playbook about 4,100, with headlines and movers trimmed by a ladder if the rest of the
+was built. What tape actually sends is bounded by `brief.MaxPromptChars`, 60,000 *characters* —
+nearer 15k tokens, and today a good deal less than that: the system prompt is about 2,500 characters
+and the seeded playbook about 4,100, with headlines and movers trimmed by a ladder if the rest of the
 feed threatens the cap. A briefing today therefore costs something like a quarter of the table.
 Budget at the ceiling anyway; the playbook and the news feed are what grow into it, and the ranking
 does not move.

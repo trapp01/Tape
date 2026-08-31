@@ -47,26 +47,26 @@ func (s Snapshot) ChangePct() float64 {
 }
 
 type Mover struct {
-	Symbol     string
-	Price      float64
-	Change     float64
-	PercentChg float64
+	Symbol     string  `json:"symbol"`
+	Price      float64 `json:"price"`
+	Change     float64 `json:"change"`
+	PercentChg float64 `json:"percent_chg"`
 }
 
 type Active struct {
-	Symbol     string
-	Volume     float64
-	TradeCount int64
+	Symbol     string  `json:"symbol"`
+	Volume     float64 `json:"volume"`
+	TradeCount int64   `json:"trade_count"`
 }
 
 type Headline struct {
-	ID        string
-	Headline  string
-	Summary   string
-	Source    string
-	URL       string
-	Symbols   []string
-	CreatedAt time.Time
+	ID        string    `json:"id"`
+	Headline  string    `json:"headline"`
+	Summary   string    `json:"summary"`
+	Source    string    `json:"source"`
+	URL       string    `json:"url"`
+	Symbols   []string  `json:"symbols"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // Session is one regular-hours trading day, folded from the prints between the

@@ -13,6 +13,8 @@ import (
 var migrations = [][]string{
 	schemaV1,
 	schemaV2,
+	schemaV3,
+	schemaV4,
 }
 
 // schemaV1 is the order and fill record every stat is derived from.
@@ -101,6 +103,63 @@ var schemaV2 = []string{
 	`CREATE INDEX calls_mode_day ON calls(mode, day)`,
 	// One call per briefing: the call of the day is the briefing's single graded claim.
 	`CREATE UNIQUE INDEX calls_briefing ON calls(briefing_id)`,
+}
+
+// schemaV3 records the co-pilot: every trade idea the model produced, what the
+// trader decided about it, and every time a guardrail said no. A proposal row is
+// written whether or not it is taken, which is what makes the pass side scorable.
+var schemaV3 = []string{
+	`CREATE TABLE proposals (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		briefing_id  INTEGER NOT NULL REFERENCES briefings(id) ON DELETE CASCADE,
+		mode         TEXT    NOT NULL,
+		day          TEXT    NOT NULL,
+		idx          INTEGER NOT NULL,
+		symbol       TEXT    NOT NULL,
+		side         TEXT    NOT NULL,
+		setup_id     TEXT    NOT NULL DEFAULT '',
+		entry        REAL    NOT NULL DEFAULT 0,
+		stop         REAL    NOT NULL DEFAULT 0,
+		target       REAL    NOT NULL DEFAULT 0,
+		qty          INTEGER NOT NULL DEFAULT 0,
+		risk_usd     REAL    NOT NULL DEFAULT 0,
+		thesis       TEXT    NOT NULL DEFAULT '',
+		invalidation TEXT    NOT NULL DEFAULT '',
+		confidence   TEXT    NOT NULL DEFAULT '',
+		status       TEXT    NOT NULL,
+		reason       TEXT    NOT NULL DEFAULT '',
+		decided_at   TEXT,
+		order_id     INTEGER REFERENCES orders(id),
+		created_at   TEXT    NOT NULL
+	)`,
+	// The index is the number the trader types in `tape take N`, so it addresses
+	// exactly one idea within its briefing.
+	`CREATE UNIQUE INDEX proposals_briefing_idx ON proposals(briefing_id, idx)`,
+	`CREATE INDEX proposals_mode_day ON proposals(mode, day)`,
+	`CREATE INDEX proposals_status ON proposals(status)`,
+	`CREATE TABLE refusals (
+		id     INTEGER PRIMARY KEY AUTOINCREMENT,
+		mode   TEXT NOT NULL,
+		day    TEXT NOT NULL,
+		at     TEXT NOT NULL,
+		rule   TEXT NOT NULL,
+		symbol TEXT NOT NULL DEFAULT '',
+		detail TEXT NOT NULL DEFAULT '',
+		source TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX refusals_mode_day ON refusals(mode, day)`,
+	`ALTER TABLE orders ADD COLUMN proposal_id INTEGER`,
+	`CREATE INDEX orders_proposal ON orders(proposal_id)`,
+}
+
+// schemaV4 records what a taken proposal actually traded, which `take --qty`
+// can lower below the sized quantity, and links a bracket leg to the order it
+// protects so a one-cancels-other pair is not counted as two claims.
+var schemaV4 = []string{
+	`ALTER TABLE proposals ADD COLUMN taken_qty INTEGER`,
+	`ALTER TABLE proposals ADD COLUMN taken_risk_usd REAL`,
+	`ALTER TABLE orders ADD COLUMN parent_order_id TEXT NOT NULL DEFAULT ''`,
+	`CREATE INDEX orders_parent ON orders(parent_order_id) WHERE parent_order_id <> ''`,
 }
 
 // migrate brings db up to the newest schema version, applying each pending

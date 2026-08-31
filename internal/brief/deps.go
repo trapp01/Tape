@@ -9,6 +9,7 @@ import (
 	"github.com/trapp01/tape/internal/config"
 	"github.com/trapp01/tape/internal/journal"
 	"github.com/trapp01/tape/internal/market"
+	"github.com/trapp01/tape/internal/risk"
 )
 
 // Deps is everything a briefing reads. Every data source is optional: a nil or
@@ -26,6 +27,14 @@ type Deps struct {
 
 	Clock  func(context.Context) (broker.Clock, error)
 	Ledger func(context.Context) (journal.Ledger, error)
+	// Equity is the account value proposals are sized against. Nil falls back to
+	// the ledger: cash plus what the open positions cost.
+	Equity func(context.Context) (float64, error)
+	// Cash is the free cash an idea may spend: ledger cash less what open orders
+	// already claim. Nil falls back to the ledger's cash.
+	Cash func(context.Context) (float64, error)
+	// Limits are the walls the model plans inside and Go sizes against.
+	Limits risk.Limits
 
 	// Playbook is the strategy file verbatim; it is the last block of the prompt.
 	Playbook string
@@ -45,6 +54,43 @@ func (d Deps) now() time.Time {
 		return time.Now()
 	}
 	return d.Now()
+}
+
+// equity is what the slate is sized against. An unreadable account sizes
+// nothing: risk.Size refuses a non-positive equity and every idea is filed with
+// that reason instead of a share count.
+func (d Deps) equity(ctx context.Context) (float64, error) {
+	if d.Equity != nil {
+		return d.Equity(ctx)
+	}
+	if d.Ledger == nil {
+		return 0, nil
+	}
+	led, err := d.Ledger(ctx)
+	if err != nil {
+		return 0, err
+	}
+	total := led.Cash
+	for _, p := range led.OpenPositions {
+		total += p.CostBasis
+	}
+	return total, nil
+}
+
+// cash is the ceiling one idea's notional may reach. Zero means unknown, which
+// sizes on the risk budget alone rather than refusing the whole slate.
+func (d Deps) cash(ctx context.Context) (float64, error) {
+	if d.Cash != nil {
+		return d.Cash(ctx)
+	}
+	if d.Ledger == nil {
+		return 0, nil
+	}
+	led, err := d.Ledger(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return led.Cash, nil
 }
 
 func (d Deps) loc() *time.Location {

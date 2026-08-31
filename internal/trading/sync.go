@@ -56,6 +56,14 @@ func (e *Engine) Sync(ctx context.Context) (SyncReport, error) {
 			return rep, err
 		}
 	}
+
+	// A proposal left claimed with an order against it was taken; the process
+	// that sent it died before it could say so.
+	reconciled, err := e.jnl.ReconcileSubmittedProposals(ctx, e.mode, e.now())
+	rep.ReconciledProposals = reconciled
+	if err != nil {
+		return rep, err
+	}
 	return rep, nil
 }
 
@@ -84,6 +92,7 @@ func (e *Engine) syncLegs(ctx context.Context, parent journal.Order, legs []brok
 				LimitPrice:    leg.LimitPrice,
 				Status:        string(leg.Status),
 				Source:        parent.Source,
+				ParentOrderID: parent.BrokerOrderID,
 				Mode:          e.mode,
 				Note:          "bracket leg of " + parent.BrokerOrderID,
 				SubmittedAt:   leg.SubmittedAt,

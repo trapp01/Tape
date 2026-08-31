@@ -22,7 +22,12 @@ type Result struct {
 	Output   Output
 	Briefing journal.Briefing
 	// Call is nil when the session's call was left standing.
-	Call   *journal.Call
+	Call *journal.Call
+	// Proposals is the takeable slate as the journal holds it, decisions included.
+	Proposals []journal.Proposal
+	// Sized is what Go computed for each idea before it was filed; nil when the
+	// slate came from the archive rather than this run.
+	Sized  []Sized
 	Reused bool
 	// CallKept is true when a forced re-run archived a new briefing and left the
 	// session's call standing, which is what happens after the open.
@@ -30,6 +35,9 @@ type Result struct {
 	// CallReplaced is true when a forced re-run swapped the session's call before
 	// the bell, while nothing had been predicted about a session in progress.
 	CallReplaced bool
+	// SlateKept is true when this run filed no proposals because the session's
+	// earlier slate is the one the trader may still act on.
+	SlateKept bool
 }
 
 // Run archives the session's briefing and files its call. An existing briefing
@@ -97,6 +105,9 @@ func Run(ctx context.Context, d Deps, p llm.Provider) (Result, error) {
 		return res, err
 	}
 	res.Call, res.CallKept, res.CallReplaced = filed.call, filed.kept, filed.replaced
+	if err := fileSlate(ctx, d, &res, v.day); err != nil {
+		return res, err
+	}
 	return res, nil
 }
 
@@ -123,9 +134,11 @@ func reuse(ctx context.Context, d Deps, day string) (Result, bool, error) {
 // fails it again here: the row keeps the raw text, not a usable briefing.
 func FromArchive(ctx context.Context, jnl *journal.Store, b journal.Briefing) (Result, error) {
 	res := Result{Briefing: b}
-	if err := json.Unmarshal(b.InputJSON, &res.Input); err != nil {
-		return res, fmt.Errorf("brief: briefing #%d has an unreadable archived input: %w", b.ID, err)
+	in, err := ArchivedInput(b)
+	if err != nil {
+		return res, err
 	}
+	res.Input = in
 	if err := json.Unmarshal(b.OutputJSON, &res.Output); err != nil {
 		res.Output = Output{}
 		return res, fmt.Errorf("brief: briefing #%d was archived without a usable reply (the raw text is on the row): %w", b.ID, err)
@@ -140,7 +153,21 @@ func FromArchive(ctx context.Context, jnl *journal.Store, b journal.Briefing) (R
 	} else if !errors.Is(err, journal.ErrNotFound) {
 		return res, err
 	}
+	if res.Proposals, err = jnl.ProposalsByBriefing(ctx, b.ID); err != nil {
+		return res, err
+	}
 	return res, nil
+}
+
+// ArchivedInput decodes what a briefing was shown, without re-reading the reply.
+// It is how a later command recovers the equity and limits a proposal was sized
+// under, which are not on the proposal row.
+func ArchivedInput(b journal.Briefing) (Input, error) {
+	var in Input
+	if err := json.Unmarshal(b.InputJSON, &in); err != nil {
+		return Input{}, fmt.Errorf("brief: briefing #%d has an unreadable archived input: %w", b.ID, err)
+	}
+	return in, nil
 }
 
 // decodeReply returns the parsed output and the bytes to archive. A reply that

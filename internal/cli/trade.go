@@ -19,9 +19,10 @@ func newBuyCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "buy SYMBOL QTY",
-		Short: "Buy shares, with an optional bracket",
-		Long:  "buy submits an entry. --stop and --target together attach a bracket; one alone attaches a single exit.",
-		Args:  cobra.ExactArgs(2),
+		Short: "Buy shares, with a stop and an optional target",
+		Long: "buy submits an entry. --stop is required while risk.require_stop is on, which is the\n" +
+			"default; adding --target makes it a full bracket.",
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			req, err := orderRequest(broker.Buy, args, cmd, limit)
 			if err != nil {
@@ -37,7 +38,7 @@ func newBuyCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().Float64Var(&limit, "limit", 0, "limit price (default: market order)")
-	cmd.Flags().Float64Var(&stop, "stop", 0, "stop-loss price for the bracket")
+	cmd.Flags().Float64Var(&stop, "stop", 0, "stop-loss price (required while risk.require_stop is on)")
 	cmd.Flags().Float64Var(&target, "target", 0, "take-profit price for the bracket")
 	cmd.Flags().StringVar(&note, "note", "", "why you are taking this trade")
 	return cmd
@@ -90,6 +91,7 @@ func runTrade(cmd *cobra.Command, req broker.OrderRequest, note string) error {
 	defer a.Close()
 
 	res, err := a.engine.Submit(cmd.Context(), req, journal.SourceHuman, note)
+	printCancelled(a, res)
 	if err != nil {
 		return fmt.Errorf("%s: %w", headline, err)
 	}

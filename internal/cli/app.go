@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 	"github.com/trapp01/tape/internal/config"
 	"github.com/trapp01/tape/internal/costs"
 	"github.com/trapp01/tape/internal/journal"
+	"github.com/trapp01/tape/internal/market"
+	"github.com/trapp01/tape/internal/risk"
 	"github.com/trapp01/tape/internal/trading"
 )
 
@@ -40,6 +43,10 @@ var (
 	// timeNow is the wall clock every command reads, so a test can pin the day
 	// and the venue's hour without waiting for one.
 	timeNow = time.Now
+
+	// pollWindow is how long a submission waits for fills. Zero takes the engine's
+	// default; a test shortens it so a resting limit order costs no real seconds.
+	pollWindow time.Duration
 )
 
 // app is everything a command needs: config, journal, venue, engine, and the
@@ -82,12 +89,18 @@ func newApp(cmd *cobra.Command, headline string) (*app, error) {
 		return nil, err
 	}
 	engine, err := trading.New(trading.Deps{
-		Broker:  bk,
-		Data:    data,
-		Journal: st,
-		Costs:   costModel(cfg),
-		Mode:    cfg.Mode,
-		Loc:     loc,
+		Broker:   bk,
+		Data:     data,
+		Journal:  st,
+		Costs:    costModel(cfg),
+		Limits:   riskLimits(cfg),
+		Refusals: journalRefusals{st},
+		Mode:     cfg.Mode,
+		Loc:      loc,
+		// One clock for the whole command, so a journal row, a refusal, and the day
+		// the recap covers cannot disagree about what time it is.
+		Now:        timeNow,
+		PollWindow: pollWindow,
 	})
 	if err != nil {
 		st.Close()
@@ -117,14 +130,56 @@ func newRecordApp(cmd *cobra.Command, headline string) (*app, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &app{cfg: cfg, loc: loc, jnl: st, out: out, style: style}, nil
+	// The venue is optional here: reading the archive must not require keys. When
+	// keys are present its clock is what says which session the slate belongs to.
+	bk, data, err := newBroker(cfg)
+	if err != nil {
+		bk, data = nil, nil
+	}
+	return &app{cfg: cfg, loc: loc, jnl: st, broker: bk, data: data, out: out, style: style}, nil
 }
 
 func (a *app) Close() error { return a.jnl.Close() }
 
-// today is the current calendar day in the configured zone, which is where every
-// day boundary in tape is measured.
-func (a *app) today() string { return timeNow().In(a.loc).Format(dayLayout) }
+// sessionDay is the Eastern trading day the venue is in right now.
+func (a *app) sessionDay() string { return market.SessionDate(timeNow()) }
+
+// slateDay is the session the takeable slate is filed under, resolved the way a
+// briefing files it: today while the market is open, otherwise the next session
+// to open. An evening briefing is a call on tomorrow, so `tape take 1` has to
+// look for it there. Without a clock the venue's current day is the best answer.
+func (a *app) slateDay(ctx context.Context) string {
+	if a.broker == nil {
+		return a.sessionDay()
+	}
+	clk, err := a.broker.Clock(ctx)
+	if err != nil || clk.IsOpen || clk.NextOpen.IsZero() {
+		return a.sessionDay()
+	}
+	return market.SessionDate(clk.NextOpen)
+}
+
+// journalRefusals puts every guardrail refusal on the record. "Zero guardrail
+// breaches in the final month" is counted from these rows.
+type journalRefusals struct{ jnl *journal.Store }
+
+func (j journalRefusals) Record(ctx context.Context, r journal.Refusal) error {
+	return j.jnl.InsertRefusal(ctx, &r)
+}
+
+// riskLimits resolves the config's [risk] section into the walls the engine
+// enforces and the briefing plans inside.
+func riskLimits(cfg config.Config) risk.Limits {
+	return risk.Limits{
+		RequireStop:                 cfg.Risk.RequireStop,
+		PerTradePct:                 cfg.Risk.PerTradePct,
+		MaxPositions:                cfg.Risk.MaxPositions,
+		MaxDailyLosses:              cfg.Risk.MaxDailyLosses,
+		NoEntriesBeforeCloseMinutes: cfg.Risk.NoEntriesBeforeCloseMinutes,
+		MinRewardRisk:               cfg.Risk.MinRewardRisk,
+		MaxEntryDeviationPct:        cfg.Risk.MaxEntryDeviationPct,
+	}
+}
 
 // costModel starts from the built-in defaults so regulatory fees stay set, then
 // applies what config overrides.

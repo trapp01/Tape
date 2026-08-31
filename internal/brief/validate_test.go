@@ -3,6 +3,8 @@ package brief
 import (
 	"strings"
 	"testing"
+
+	"github.com/trapp01/tape/internal/playbook"
 )
 
 func ptr(v float64) *float64 { return &v }
@@ -20,8 +22,24 @@ func validOutput() Output {
 			Rationale:    "M2 continuation over yesterday's high.",
 			Invalidation: "A break back under 511.00.",
 		},
+		Proposals: []Proposal{proposal("NVDA")},
 		Watchlist: []WatchNote{{Symbol: "NVDA", Bias: "bullish", Note: "Holding the gap."}},
 		Risks:     []string{"Thin volume into a holiday."},
+	}
+}
+
+// proposal is one complete idea; the cases below break one field at a time.
+func proposal(symbol string) Proposal {
+	return Proposal{
+		Symbol:       symbol,
+		Side:         SideLong,
+		SetupID:      "M2",
+		Entry:        128.40,
+		Stop:         126.90,
+		Target:       131.40,
+		Thesis:       "Yesterday's high held on the retest.",
+		Invalidation: "A five-minute close back under 127.80.",
+		Confidence:   ConfidenceMedium,
 	}
 }
 
@@ -53,6 +71,30 @@ func TestValidate(t *testing.T) {
 		{"watch note with no bias", func(o *Output) { o.Watchlist[0].Bias = "" }, "bias"},
 		{"too many watch notes", func(o *Output) { o.Watchlist = repeatNotes(MaxWatchNotes + 1) }, "watchlist notes"},
 		{"too many risks", func(o *Output) { o.Risks = repeatRisks(MaxRisks + 1) }, "risks"},
+
+		{"no proposals is a valid morning", func(o *Output) { o.Proposals = nil }, ""},
+		{"the full slate is allowed", func(o *Output) { o.Proposals = slate(MaxProposals) }, ""},
+		{"one proposal too many", func(o *Output) { o.Proposals = slate(MaxProposals + 1) }, "proposals"},
+		{"no symbol", func(o *Output) { o.Proposals[0].Symbol = "" }, "symbol"},
+		{"a lowercase symbol", func(o *Output) { o.Proposals[0].Symbol = "nvda" }, "uppercase"},
+		{"a short", func(o *Output) { o.Proposals[0].Side = "short" }, "shorting is not enabled"},
+		{"no side", func(o *Output) { o.Proposals[0].Side = "" }, "side"},
+		{"no setup id", func(o *Output) { o.Proposals[0].SetupID = " " }, "setup id"},
+		{"no entry", func(o *Output) { o.Proposals[0].Entry = 0 }, "entry must be positive"},
+		{"no stop", func(o *Output) { o.Proposals[0].Stop = 0 }, "stop must be positive"},
+		{"a negative stop", func(o *Output) { o.Proposals[0].Stop = -1 }, "stop must be positive"},
+		{"no target", func(o *Output) { o.Proposals[0].Target = 0 }, "target must be positive"},
+		{"a stop above the entry", func(o *Output) { o.Proposals[0].Stop = 129 }, "not below entry"},
+		{"a stop at the entry", func(o *Output) { o.Proposals[0].Stop = 128.40 }, "not below entry"},
+		{"a target below the entry", func(o *Output) { o.Proposals[0].Target = 127 }, "not above entry"},
+		{"a target at the entry", func(o *Output) { o.Proposals[0].Target = 128.40 }, "not above entry"},
+		{"no thesis", func(o *Output) { o.Proposals[0].Thesis = "" }, "thesis"},
+		{"no invalidation", func(o *Output) { o.Proposals[0].Invalidation = "\t" }, "invalidation"},
+		{"an unknown confidence", func(o *Output) { o.Proposals[0].Confidence = "certain" }, "confidence"},
+		{"no confidence", func(o *Output) { o.Proposals[0].Confidence = "" }, "confidence"},
+		{"the same symbol twice", func(o *Output) {
+			o.Proposals = []Proposal{proposal("NVDA"), proposal("NVDA")}
+		}, "one idea per symbol"},
 	}
 
 	for _, tc := range tests {
@@ -80,8 +122,9 @@ func TestValidate(t *testing.T) {
 // the watchlist the model was actually shown.
 func briefingData() Input {
 	return Input{
-		Indexes:   []SymbolRead{{Symbol: "SPY"}, {Symbol: "QQQ"}},
-		Watchlist: []SymbolRead{{Symbol: "NVDA"}, {Symbol: "AAPL"}},
+		Indexes:   []SymbolRead{{Symbol: "SPY", Last: 512.10}, {Symbol: "QQQ", Last: 440.00}},
+		Watchlist: []SymbolRead{{Symbol: "NVDA", Last: 128.10}, {Symbol: "AAPL", Last: 225.00}},
+		Playbook:  playbook.DefaultTemplate,
 	}
 }
 
@@ -100,6 +143,22 @@ func TestValidateAgainstTheBriefingsData(t *testing.T) {
 		{"blank rationale", func(o *Output) { o.Call.Rationale = "  " }, "rationale"},
 		{"no invalidation", func(o *Output) { o.Call.Invalidation = "" }, "invalidation"},
 		{"blank invalidation", func(o *Output) { o.Call.Invalidation = "\t" }, "invalidation"},
+
+		{"a proposal on an index passes", func(o *Output) { o.Proposals[0].Symbol = "SPY" }, ""},
+		{"every entry setup is citable", func(o *Output) {
+			o.Proposals = []Proposal{proposal("NVDA"), proposal("AAPL"), proposal("SPY")}
+			o.Proposals[0].SetupID = "M1"
+			o.Proposals[1].SetupID = "R1"
+			o.Proposals[2].SetupID = "M2"
+		}, ""},
+
+		// N1 is a heading, and a rule, but citing it argues for the trade it
+		// forbids. Nothing downstream would ever catch that.
+		{"a proposal citing a no-trade rule", func(o *Output) { o.Proposals[0].SetupID = "N1" }, "N1"},
+
+		{"a proposal on a symbol not in the data", func(o *Output) { o.Proposals[0].Symbol = "DOGEUSD" }, "DOGEUSD"},
+		{"a proposal citing a setup the playbook never defines", func(o *Output) { o.Proposals[0].SetupID = "Z9" }, "Z9"},
+		{"a proposal citing a setup in the wrong case", func(o *Output) { o.Proposals[0].SetupID = "m2" }, "m2"},
 	}
 
 	for _, tc := range tests {
@@ -143,6 +202,36 @@ func TestValidateAllowsTheFullWatchlist(t *testing.T) {
 	if err := Validate(o); err != nil {
 		t.Errorf("Validate at the caps: %v", err)
 	}
+}
+
+// A playbook with no setup ids leaves nothing to cite, so no proposal can stand.
+func TestValidateAgainstAPlaybookWithNoSetups(t *testing.T) {
+	in := briefingData()
+	in.Playbook = "# Playbook\n\nTrade well.\n"
+
+	o := validOutput()
+	err := ValidateAgainst(o, in)
+	if err == nil {
+		t.Fatal("ValidateAgainst accepted a setup id no playbook defines")
+	}
+	if !strings.Contains(err.Error(), "playbook defines none") {
+		t.Errorf("error %q does not say the playbook defines no setups", err)
+	}
+
+	o.Proposals = nil
+	if err := ValidateAgainst(o, in); err != nil {
+		t.Errorf("a briefing with no proposals needs no setups: %v", err)
+	}
+}
+
+// slate is n proposals on distinct symbols the briefing data carries.
+func slate(n int) []Proposal {
+	symbols := []string{"NVDA", "AAPL", "SPY", "QQQ"}
+	out := make([]Proposal, n)
+	for i := range out {
+		out[i] = proposal(symbols[i%len(symbols)])
+	}
+	return out
 }
 
 func repeatNotes(n int) []WatchNote {

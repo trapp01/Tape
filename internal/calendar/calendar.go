@@ -28,19 +28,19 @@ const (
 )
 
 type Event struct {
-	Kind  Kind
-	Title string
+	Kind  Kind   `json:"kind"`
+	Title string `json:"title"`
 	// Symbol is set for earnings events only.
-	Symbol string
+	Symbol string `json:"symbol"`
 	// At is the scheduled time in UTC. AllDay marks events with a date but no
 	// published time, which are rendered on the day without a clock.
-	At     time.Time
-	AllDay bool
-	Impact Impact
-	Source string
+	At     time.Time `json:"at"`
+	AllDay bool      `json:"all_day"`
+	Impact Impact    `json:"impact"`
+	Source string    `json:"source"`
 	// Detail carries what the source knows beyond the title: "before open",
 	// consensus, prior value. Free text, may be empty.
-	Detail string
+	Detail string `json:"detail"`
 }
 
 type EconomicProvider interface {

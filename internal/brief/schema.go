@@ -12,7 +12,7 @@ func schema() json.RawMessage {
 const outputSchema = `{
   "type": "object",
   "additionalProperties": false,
-  "required": ["market_read", "regime_note", "calendar_note", "call", "watchlist", "risks"],
+  "required": ["market_read", "regime_note", "calendar_note", "call", "proposals", "watchlist", "risks"],
   "properties": {
     "market_read": {
       "type": "string",
@@ -58,6 +58,60 @@ const outputSchema = `{
           "type": "string",
           "minLength": 1,
           "description": "The observation that would prove the call wrong before the close."
+        }
+      }
+    },
+    "proposals": {
+      "type": "array",
+      "maxItems": 3,
+      "description": "Zero to three trade ideas, each one citing a playbook setup id. An empty list is a valid morning.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["symbol", "side", "setup_id", "entry", "stop", "target", "thesis", "invalidation", "confidence"],
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Ticker, uppercase, from the INDEXES or WATCHLIST blocks."
+          },
+          "side": {
+            "type": "string",
+            "enum": ["long"],
+            "description": "Long only. Shorting is not enabled."
+          },
+          "setup_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The playbook setup this rests on, e.g. M2."
+          },
+          "entry": {
+            "type": "number",
+            "description": "The price the trade is entered at."
+          },
+          "stop": {
+            "type": "number",
+            "description": "The exit if the idea is wrong. Below the entry."
+          },
+          "target": {
+            "type": "number",
+            "description": "The exit if the idea is right. Above the entry."
+          },
+          "thesis": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Why this trade, in one or two sentences, naming what the setup asks for."
+          },
+          "invalidation": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The observation that kills the idea, separate from the stop price."
+          },
+          "confidence": {
+            "type": "string",
+            "enum": ["low", "medium", "high"],
+            "description": "Your own read. It never changes the size; Go computes that from the stop."
+          }
         }
       }
     },

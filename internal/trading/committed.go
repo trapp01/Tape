@@ -52,20 +52,43 @@ func (e *Engine) committedCash(ctx context.Context) (float64, error) {
 }
 
 // committedSellQty is how many shares of symbol the journal's open sells will
-// deliver, bracket legs included. An unfilled bracket claims its shares twice —
-// only one leg can trade — which keeps the rule strict rather than wrong.
+// deliver. The legs of one bracket are one claim, not two: they are
+// one-cancels-other, so the largest of them is what can actually trade.
 func (e *Engine) committedSellQty(ctx context.Context, symbol string) (int, error) {
-	open, err := e.openOrders(ctx)
+	open, err := e.restingSells(ctx, symbol)
 	if err != nil {
 		return 0, err
 	}
+
 	total := 0
+	// A leg with no parent stands alone, so its own id keys its group.
+	largest := map[string]int{}
 	for _, o := range open {
-		if o.Side == string(broker.Sell) && o.Symbol == symbol {
+		if o.ParentOrderID == "" {
 			total += remainingQty(o)
+			continue
 		}
+		largest[o.ParentOrderID] = max(largest[o.ParentOrderID], remainingQty(o))
+	}
+	for _, qty := range largest {
+		total += qty
 	}
 	return total, nil
+}
+
+// restingSells is the journal's open sell orders for one symbol.
+func (e *Engine) restingSells(ctx context.Context, symbol string) ([]journal.Order, error) {
+	open, err := e.openOrders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []journal.Order
+	for _, o := range open {
+		if o.Side == string(broker.Sell) && o.Symbol == symbol && remainingQty(o) > 0 {
+			out = append(out, o)
+		}
+	}
+	return out, nil
 }
 
 func (e *Engine) openOrders(ctx context.Context) ([]journal.Order, error) {

@@ -91,3 +91,31 @@ func (e *Engine) currentPrices(ctx context.Context, held []journal.OpenPosition)
 func (e *Engine) Today() time.Time {
 	return e.now().In(e.loc)
 }
+
+// FreeCash is ledger cash less what the open buy orders already claim. It is the
+// most a new entry can spend, and what the slate is sized against.
+func (e *Engine) FreeCash(ctx context.Context) (float64, error) {
+	led, err := e.jnl.Ledger(ctx, e.mode)
+	if err != nil {
+		return 0, fmt.Errorf("reading tape ledger: %w", err)
+	}
+	committed, err := e.committedCash(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return max(led.Cash-committed, 0), nil
+}
+
+// Equity is tape's own account value: ledger cash plus the cost basis of what it
+// holds. The venue's equity never enters it.
+func (e *Engine) Equity(ctx context.Context) (float64, error) {
+	led, err := e.jnl.Ledger(ctx, e.mode)
+	if err != nil {
+		return 0, fmt.Errorf("reading tape ledger: %w", err)
+	}
+	equity := led.Cash
+	for _, p := range led.OpenPositions {
+		equity += p.CostBasis
+	}
+	return equity, nil
+}

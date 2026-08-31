@@ -18,6 +18,12 @@ import (
 // window for fills. The journal row exists from the moment the venue accepts the
 // order, so a crash mid-poll loses timing, never the order itself.
 func (e *Engine) Submit(ctx context.Context, req broker.OrderRequest, source, note string) (Result, error) {
+	return e.SubmitFor(ctx, req, source, note, nil)
+}
+
+// SubmitFor is Submit for an order that executes a proposal, so the record links
+// the idea to the fills it produced.
+func (e *Engine) SubmitFor(ctx context.Context, req broker.OrderRequest, source, note string, proposalID *int64) (Result, error) {
 	req.Symbol = strings.ToUpper(strings.TrimSpace(req.Symbol))
 	if req.Type == "" {
 		req.Type = broker.Market
@@ -30,20 +36,24 @@ func (e *Engine) Submit(ctx context.Context, req broker.OrderRequest, source, no
 	if _, err := e.Sync(ctx); err != nil {
 		return Result{}, fmt.Errorf("reconciling the journal before %s %d %s: %w", req.Side, req.Qty, req.Symbol, err)
 	}
-	if err := e.check(ctx, req); err != nil {
+	cancelled, err := e.freeSharesForExit(ctx, req)
+	if err != nil {
 		return Result{}, err
 	}
+	if err := e.check(ctx, req, source); err != nil {
+		return Result{Cancelled: cancelled}, err
+	}
 	if req.ClientOrderID == "" {
-		id, err := newClientOrderID(e.now())
+		id, err := newClientOrderID(e.now(), proposalID)
 		if err != nil {
-			return Result{}, err
+			return Result{Cancelled: cancelled}, err
 		}
 		req.ClientOrderID = id
 	}
 
 	bo, err := e.broker.SubmitOrder(ctx, req)
 	if err != nil {
-		return Result{}, fmt.Errorf("submitting %s %d %s: %w", req.Side, req.Qty, req.Symbol, err)
+		return Result{Cancelled: cancelled}, fmt.Errorf("submitting %s %d %s: %w", req.Side, req.Qty, req.Symbol, err)
 	}
 
 	jo := journal.Order{
@@ -58,16 +68,17 @@ func (e *Engine) Submit(ctx context.Context, req broker.OrderRequest, source, no
 		TakeProfit:    req.TakeProfit,
 		Status:        string(bo.Status),
 		Source:        source,
+		ProposalID:    proposalID,
 		Mode:          e.mode,
 		Note:          note,
 		SubmittedAt:   e.now(),
 	}
 	if err := e.jnl.InsertOrder(ctx, &jo); err != nil {
-		return Result{BrokerOrder: bo}, fmt.Errorf("journalling %s %d %s: %w", req.Side, req.Qty, req.Symbol, err)
+		return Result{BrokerOrder: bo, Cancelled: cancelled}, fmt.Errorf("journalling %s %d %s: %w", req.Side, req.Qty, req.Symbol, err)
 	}
 
 	fills, final, err := e.settle(ctx, &jo, bo)
-	return Result{Order: jo, BrokerOrder: final, Fills: fills}, err
+	return Result{Order: jo, BrokerOrder: final, Fills: fills, Cancelled: cancelled}, err
 }
 
 // settle records what the venue already reported, then polls until the order can
@@ -198,11 +209,16 @@ func fillTime(bo broker.Order, now func() time.Time) time.Time {
 }
 
 // newClientOrderID correlates the venue's order with the journal row before the
-// venue has assigned an id of its own.
-func newClientOrderID(now time.Time) (string, error) {
+// venue has assigned an id of its own. An order executing a proposal carries the
+// proposal in its id, so a live order can be traced back to the idea by hand.
+func newClientOrderID(now time.Time, proposalID *int64) (string, error) {
 	var b [2]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", errors.New("generating a client order id: " + err.Error())
 	}
-	return fmt.Sprintf("tape-%d-%s", now.UnixNano(), hex.EncodeToString(b[:])), nil
+	nonce := hex.EncodeToString(b[:])
+	if proposalID != nil {
+		return fmt.Sprintf("tape-p%d-%s", *proposalID, nonce), nil
+	}
+	return fmt.Sprintf("tape-%d-%s", now.UnixNano(), nonce), nil
 }

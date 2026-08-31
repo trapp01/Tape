@@ -27,7 +27,7 @@ taken, and place nothing.
 ## Setups
 
 Every proposal names one id from this list. A proposal with no id is not a setup
-and gets rejected.
+and gets rejected. N-rules are no-trade conditions and cannot be cited as a setup.
 
 ### M1 gap-and-go continuation
 
@@ -54,7 +54,7 @@ and gets rejected.
 - Entry: rejection at the edge, taken back toward the middle of the range.
 - Invalidation: a trade through the edge by more than a quarter of the range.
 - Target: the midpoint of the range. Take it; do not hold for the far edge.
-- Size: half the per-trade risk in Risk rules. Range trades fail in clusters.
+- Size: the per-trade risk in Risk rules, and no more.
 
 ### N1 no-trade conditions
 
@@ -75,7 +75,7 @@ briefing plan inside them; changing a number in this file does not move the wall
 - At most 3 open positions at once.
 - No averaging down. A position that is losing is never added to.
 - Flat by the close. Nothing is held overnight.
-- After two stopped-out losses in one day, the day is over. No revenge trade.
+- After two positions close at a loss in one day, the day is over. No revenge trade.
 
 ## Call of the day
 

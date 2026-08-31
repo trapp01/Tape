@@ -50,8 +50,9 @@ func TestOpenBuyOrdersReserveCash(t *testing.T) {
 	}
 }
 
-// F2: a resting sell already promises its shares. Selling the same ten at market
-// filled both and took the position to -10.
+// F2: a resting sell already promises its shares, and selling the same ten at
+// market filled both and took the position to -10. The exit is now allowed and
+// the resting order comes off first, so the ledger still never goes short.
 func TestOpenSellOrdersReserveShares(t *testing.T) {
 	fb := fake.New()
 	fb.SetPrice("AAPL", 100)
@@ -68,22 +69,26 @@ func TestOpenSellOrdersReserveShares(t *testing.T) {
 		t.Fatalf("resting sell: %v", err)
 	}
 
-	_, err := eng.Submit(ctx, broker.OrderRequest{Symbol: "AAPL", Side: broker.Sell, Qty: 10}, journal.SourceHuman, "")
-	if err == nil {
-		t.Fatal("the market sell was accepted; the resting sell already promises those ten shares")
+	// Twenty is more than the ledger holds however the ten are committed.
+	_, err := eng.Submit(ctx, broker.OrderRequest{Symbol: "AAPL", Side: broker.Sell, Qty: 20}, journal.SourceHuman, "")
+	if err == nil || !strings.Contains(err.Error(), "rule: no shorting") {
+		t.Fatalf("overselling must be refused, got: %v", err)
 	}
-	for _, want := range []string{"rule: no shorting", "holds 10", "10 already committed", "leaving 0"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("refusal missing %q, got: %v", want, err)
-		}
+
+	res, err := eng.Submit(ctx, broker.OrderRequest{Symbol: "AAPL", Side: broker.Sell, Qty: 10}, journal.SourceHuman, "")
+	if err != nil {
+		t.Fatalf("the exit must free its own shares: %v", err)
+	}
+	if len(res.Cancelled) != 1 {
+		t.Fatalf("cancelled %d resting orders, want the 1 holding the shares", len(res.Cancelled))
 	}
 
 	positions, err := st.OpenPositions(ctx, journal.ModePaper)
 	if err != nil {
 		t.Fatalf("open positions: %v", err)
 	}
-	if len(positions) != 1 || positions[0].Qty != 10 {
-		t.Fatalf("positions = %+v, want 10 AAPL still held", positions)
+	if len(positions) != 0 {
+		t.Fatalf("positions = %+v, want a flat ledger, and never a short one", positions)
 	}
 }
 

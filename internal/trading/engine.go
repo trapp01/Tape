@@ -4,6 +4,7 @@
 package trading
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/trapp01/tape/internal/broker"
 	"github.com/trapp01/tape/internal/costs"
 	"github.com/trapp01/tape/internal/journal"
+	"github.com/trapp01/tape/internal/risk"
 )
 
 const (
@@ -18,12 +20,22 @@ const (
 	defaultPollInterval = 200 * time.Millisecond
 )
 
+// RefusalSink writes a guardrail refusal to the record. A nil sink still enforces
+// every rule; it only means nothing is written down.
+type RefusalSink interface {
+	Record(ctx context.Context, r journal.Refusal) error
+}
+
 // Deps are an Engine's collaborators. Broker, Data and Journal are required.
 type Deps struct {
 	Broker  broker.Broker
 	Data    broker.MarketData
 	Journal *journal.Store
 	Costs   costs.Model
+	// Limits are the entry guardrails. A zero limit turns its own rule off.
+	Limits risk.Limits
+	// Refusals receives every refusal. Nil means refusals are not recorded.
+	Refusals RefusalSink
 	// Mode is "paper" or "live"; every journal row is tagged with it.
 	Mode string
 	// Loc is the zone day boundaries are measured in. Nil means time.Local.
@@ -42,6 +54,8 @@ type Engine struct {
 	data         broker.MarketData
 	jnl          *journal.Store
 	costs        costs.Model
+	limits       risk.Limits
+	refusals     RefusalSink
 	mode         string
 	loc          *time.Location
 	now          func() time.Time
@@ -55,6 +69,9 @@ type Result struct {
 	Order       journal.Order
 	BrokerOrder broker.Order
 	Fills       []journal.Fill
+	// Cancelled are resting legs taken off the books to free the shares this
+	// order sells. An exit is never trapped by the bracket that opened it.
+	Cancelled []journal.Order
 }
 
 // SyncReport is what one reconciliation pass changed.
@@ -64,6 +81,9 @@ type SyncReport struct {
 	Fills   []journal.Fill
 	// Missing are journal orders the venue no longer knows about.
 	Missing []string
+	// ReconciledProposals are ideas whose order reached the venue but whose
+	// decision never landed, closed out by this pass.
+	ReconciledProposals []int64
 }
 
 // FlattenReport is the end-of-day sweep. StillOpen and Problems both mean the
@@ -110,6 +130,8 @@ func New(d Deps) (*Engine, error) {
 		data:         d.Data,
 		jnl:          d.Journal,
 		costs:        d.Costs,
+		limits:       d.Limits,
+		refusals:     d.Refusals,
 		mode:         d.Mode,
 		loc:          d.Loc,
 		now:          d.Now,
@@ -136,3 +158,6 @@ func (e *Engine) Mode() string { return e.mode }
 
 // Location is the zone the engine measures trading days in.
 func (e *Engine) Location() *time.Location { return e.loc }
+
+// Limits are the entry guardrails this engine enforces.
+func (e *Engine) Limits() risk.Limits { return e.limits }

@@ -98,6 +98,12 @@ func money(v float64) string {
 	return sign + "$" + b.String() + "." + frac
 }
 
+// money0 drops the cents, for a figure read at a glance rather than reconciled.
+func money0(v float64) string {
+	whole, _, _ := strings.Cut(money(v), ".")
+	return whole
+}
+
 // signedMoney keeps the plus so a gain reads as a gain in a column of numbers.
 func signedMoney(v float64) string {
 	m := money(v)

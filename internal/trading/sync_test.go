@@ -277,8 +277,10 @@ func TestFlattenClosesAndJournalsAsEOD(t *testing.T) {
 	if _, err := eng.Submit(ctx, broker.OrderRequest{Symbol: "AAPL", Side: broker.Buy, Qty: 10}, journal.SourceHuman, ""); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
+	// The resting order sits in another name: a buy of AAPL under what the ledger
+	// already paid for it is refused as averaging down.
 	limit := 1.0
-	resting, err := eng.Submit(ctx, broker.OrderRequest{Symbol: "AAPL", Side: broker.Buy, Qty: 1, Type: broker.Limit, LimitPrice: &limit}, journal.SourceHuman, "")
+	resting, err := eng.Submit(ctx, broker.OrderRequest{Symbol: "MSFT", Side: broker.Buy, Qty: 1, Type: broker.Limit, LimitPrice: &limit}, journal.SourceHuman, "")
 	if err != nil {
 		t.Fatalf("resting order: %v", err)
 	}

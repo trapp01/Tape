@@ -33,6 +33,7 @@ func renderBriefing(a *app, res brief.Result, withModel bool) {
 	renderRegime(a, in, out.RegimeNote)
 	if withModel {
 		renderCall(a, res)
+		renderProposals(a, res)
 	}
 	renderCalendar(a, in, a.loc, out.CalendarNote)
 	renderWatchlist(a, in, out.Watchlist)
@@ -232,9 +233,9 @@ func renderFooter(a *app, res brief.Result) {
 
 	switch {
 	case res.CallReplaced:
-		fmt.Fprintln(a.out, a.style.dim("replaced the earlier call; calls lock at 09:30 ET."))
+		fmt.Fprintln(a.out, a.style.dim("replaced the earlier call and expired the earlier slate; both lock at 09:30 ET."))
 	case res.CallKept:
-		fmt.Fprintln(a.out, a.style.dim("the session's first call stands; calls lock at 09:30 ET, so this briefing is a second read, not a second prediction."))
+		fmt.Fprintln(a.out, a.style.dim("the session's first call and slate stand; both lock at 09:30 ET, so this briefing is a second read, not a second prediction."))
 	}
 }
 

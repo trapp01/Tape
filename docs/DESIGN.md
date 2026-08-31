@@ -90,10 +90,11 @@ a wall.
 
 - **No order without confirmation.** The model can propose. Only `tape take` transmits.
 - **Risk limits are Go.** Per-trade risk capped at a small fraction of the account, a cap on open
-  positions, no averaging down, flat by close, and a daily halt after two stopped-out losses. The
-  model has no code path around any of them.
-- **Every proposal carries its exit before its entry.** Stop, target, and size are required by the
-  schema. A proposal without them is rejected before a human sees it.
+  positions, no averaging down, flat by close, and a daily halt once two positions have closed the
+  day at a gross loss. The model has no code path around any of them.
+- **Every proposal carries its exit before its entry.** Entry, stop and target are all required by
+  the schema, and a proposal missing one is rejected before a human sees it. Size is not on that
+  list: the model never supplies it, Go computes it.
 - **Every briefing makes falsifiable calls.** Direction for the day, a thesis per setup, a condition
   that would invalidate it. Nothing so vague it cannot be wrong.
 
@@ -104,10 +105,12 @@ cmd/tape             the binary
 internal/cli         cobra commands: thin, one function call each
 internal/config      ~/.tape/config.toml, env overrides for secrets
 internal/broker      Broker + MarketData interfaces; alpaca/ is the paper adapter
-internal/journal     SQLite: orders, fills, round-trip trades, ledger, day recap, briefings, calls
+internal/journal     SQLite: orders, fills, trades, ledger, day recap, briefings, calls,
+                     proposals and their decisions, and every guardrail refusal
 internal/costs       slippage, commission, and regulatory-fee model applied to every fill
 internal/llm         Provider interface; native Anthropic plus one OpenAI-compatible client
-internal/trading     orchestration: submit, sync fills, flatten
+internal/risk        position sizing and the limits every entry is checked against
+internal/trading     orchestration: submit, sync fills, cancel, flatten, and the guardrails
 internal/market      read-only data contracts; alpacadata/ reads snapshots, bars, sessions, news
 internal/calendar    scheduled-event contracts; fomc/ fred/ finnhub/ are the sources
 internal/regime      the market label, computed from daily bars by fixed rules
@@ -211,16 +214,69 @@ that briefing runs the same validation and fails the same way. Keeping the rejec
 rendering it anyway is the tempting shortcut, and it is wrong: a reply that could not be trusted
 once does not become trustworthy by being read a second time.
 
+### Co-pilot design
+
+The briefing's proposals are where a model's output stops being commentary and starts being an
+order. Nine decisions carry that seam, and most of them exist because the obvious implementation
+loses something the record later needs.
+
+**Size is Go's, never the model's.** The model returns prices and prose; `risk.SizeWithin` turns
+ledger equity, the per-trade percent and the stop distance into a share count. A schema-valid JSON
+object with a fabricated share count looks exactly like a good one, which is the failure mode
+`docs/models.md` is written around.
+
+**Cash is a second ceiling.** Risk sizes first, then the position is trimmed to what free cash — the
+ledger's cash less what open orders already claim, and less 2% of headroom for slippage and the
+commission — can actually buy. A $5,000 ledger cannot buy $8,000 of stock, and a slate that prints a
+size the account cannot pay for is a slate the overspend rule refuses at the till.
+
+**Only facts about the idea reject it.** A refusal on the idea's own numbers — no stop, a target
+under the entry, a malformed order, a short — marks the proposal `rejected`, because those numbers
+will not change. A refusal about the moment — the risk cap, the position limit, the clock, the
+daily halt, the cash, a stale level — leaves it `proposed` and lives only in `refusals`, because a
+cap that lifts in an hour is not a verdict on the trade. A rule the map does not recognise counts as
+situational, so a guardrail added later cannot silently decide an idea forever.
+
+**`take` claims before it submits.** The row moves `proposed → submitting` before the order leaves
+the machine, so a crash between the venue accepting and the decision landing leaves a claim rather
+than a takeable proposal. The claim is resolved from the order's client id — which carries the
+proposal number — by `Sync` and by `tape proposals --reconcile`, and a claimed idea can never be
+taken twice.
+
+**A stale level is re-checked at take time.** The entry is measured against the live quote when the
+order is placed, not only when it was proposed: a level written before the bell is a number and not
+a plan by 11am. An entry the tape has already traded through its own stop is refused outright, since
+filling it would open a position the stop leg exits immediately.
+
+**An exit is always allowed.** Sells run none of the entry guardrails, and a manual sell blocked only
+by the resting bracket legs standing over the same shares cancels those legs first and says so. A
+rule that traps the trader in a position is worse than the one it enforces.
+
+**The halt counts positions, not exits.** A day is over once `max_daily_losses` *symbols* — two by
+default — have closed at a gross loss. Scaling out of one winner in three clips is not three losses,
+and a position that nets negative only because the commission floor landed twice was not a losing
+read.
+
+**The slate day is the session day.** `take`, `pass`, `why`, `proposals` and `eod` resolve the number
+the trader typed against the session the briefing keyed itself to — the next open while the market is
+shut — never against the reader's calendar date. An evening briefing is a call and a slate on
+tomorrow, and it has to be takeable that same evening or the ideas expire unacted.
+
+**N-rules cannot be cited.** `ValidateAgainst` accepts only setup ids the playbook defines whose id
+does not start with `N`. An N-rule is a no-trade condition, so a proposal citing one is arguing for
+the trade its own rule forbids.
+
 ## Phases and the gate
 
 0. **Plumbing — complete.** Config, broker adapter, journal, cost model, LLM layer, manual paper
    orders end to end.
 1. **The briefing — complete.** Data collectors behind provider interfaces, `tape brief` with a
    scored call of the day, before any trade proposals exist.
-2. **Co-pilot — next.** Schema-validated proposals citing the playbook's setup ids, take and pass
-   with reasons, the Go-enforced guardrails.
-3. **The mirror.** Nightly scoring including counterfactuals, `tape stats`, weekly `tape retro` with
-   playbook diffs. Then the actual experiment: three or more months of real mornings on paper.
+2. **Co-pilot — complete.** Schema-validated proposals citing the playbook's setup ids, sized in Go,
+   `take` and `pass` with reasons, and the rest of the Go-enforced guardrails.
+3. **The mirror — next.** Nightly scoring including counterfactuals, `tape stats`, weekly `tape
+   retro` with playbook diffs. Then the actual experiment: three or more months of real mornings on
+   paper.
 
 Phase 1 contains: a read-only market client over Alpaca's snapshots, daily bars, one-minute
 sessions, screener and news; three calendars (FOMC from a compiled-in table, US economic releases
@@ -230,10 +286,26 @@ the rule-based regime classifier; `playbook.md`, seeded once by `tape init` and 
 archive; and `tape briefs`, `tape score`, `tape watchlist` and `tape playbook` around it. Schema
 version 2 adds the `briefings` and `calls` tables.
 
-What Phase 1 has not done is meet reality. Every adapter is tested against a fake HTTP server, the
-briefing against an in-memory feed and a fake model. Nothing here has run against a real Alpaca
-account, a real calendar API, or a real model, so nothing in the repository is evidence about how
-good the reads are — which is the whole reason the call is scored rather than shown off.
+Phase 2 contains: the proposal half of the briefing schema, with the same Go-side validation the
+call gets — long only, every price present and on its own side of the entry, one idea per symbol, a
+symbol the briefing actually showed, and an entry setup id the playbook defines; `internal/risk`,
+which sizes each idea from equity, the per-trade percent and the stop distance and caps it at what
+free cash can buy; the slate lifecycle in the journal — `proposed → submitting → taken | passed |
+rejected | expired | unfilled` — with `tape proposals`, `tape take`, `tape pass`, `tape why` and
+`tape cancel` around it; the eight entry guardrails in `internal/trading` (no entry without a stop,
+target above entry, stale entry, risk cap, max positions, no averaging down, flat by close, daily
+halt), each of which writes its rule, symbol and numbers to `refusals`; the exit path that clears a
+bracket's resting legs so a sell is never trapped by the order that opened the position; and `eod`
+expiring the ideas nobody decided and marking a take whose order never traded a share `unfilled`.
+Schema version 3 adds the `proposals` and `refusals` tables and `orders.proposal_id`; version 4 adds
+the quantity and risk a `--qty` take actually sent, and `orders.parent_order_id`, so a
+one-cancels-other bracket pair counts as one claim on the shares instead of two.
+
+What none of it has done is meet reality. Every adapter is tested against a fake HTTP server, the
+briefing and the slate against an in-memory feed, an in-memory venue and a fake model. Nothing here
+has run against a real Alpaca account, a real calendar API, or a real model, so nothing in the
+repository is evidence about how good the reads are — which is the whole reason the call is scored
+rather than shown off.
 
 Between three and four sits the gate. No real money moves until every box ticks:
 

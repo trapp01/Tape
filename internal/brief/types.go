@@ -10,34 +10,42 @@ import (
 	"github.com/trapp01/tape/internal/calendar"
 	"github.com/trapp01/tape/internal/market"
 	"github.com/trapp01/tape/internal/regime"
+	"github.com/trapp01/tape/internal/risk"
 )
 
 // Input is the complete context handed to the model, archived verbatim so a
 // briefing can be re-read later next to what actually happened.
 type Input struct {
-	GeneratedAt time.Time
-	Timezone    string
-	Mode        string
-	LedgerCash  float64
+	GeneratedAt time.Time `json:"generated_at"`
+	Timezone    string    `json:"timezone"`
+	Mode        string    `json:"mode"`
+	LedgerCash  float64   `json:"ledger_cash"`
+	// Equity is what the slate was sized against, and Limits are the walls it was
+	// sized inside. Both are archived so an old proposal's share count still adds up.
+	Equity float64     `json:"equity"`
+	Limits risk.Limits `json:"limits"`
+	// FreeCash is ledger cash less what open orders already claim: the ceiling on
+	// what one idea may cost, archived next to the size it produced.
+	FreeCash float64 `json:"free_cash"`
 	// MarketOpen and NextOpen come from the venue clock.
-	MarketOpen bool
-	NextOpen   time.Time
-	NextClose  time.Time
-	Indexes    []SymbolRead
-	Regime     regime.Regime
-	Calendar   []calendar.Event
-	Watchlist  []SymbolRead
+	MarketOpen bool             `json:"market_open"`
+	NextOpen   time.Time        `json:"next_open"`
+	NextClose  time.Time        `json:"next_close"`
+	Indexes    []SymbolRead     `json:"indexes"`
+	Regime     regime.Regime    `json:"regime"`
+	Calendar   []calendar.Event `json:"calendar"`
+	Watchlist  []SymbolRead     `json:"watchlist"`
 	// MarketHeadlines are the market-wide stories, separate from the per-symbol
 	// ones on a SymbolRead.
-	MarketHeadlines []market.Headline
-	Gainers         []market.Mover
-	Losers          []market.Mover
-	Actives         []market.Active
+	MarketHeadlines []market.Headline `json:"market_headlines"`
+	Gainers         []market.Mover    `json:"gainers"`
+	Losers          []market.Mover    `json:"losers"`
+	Actives         []market.Active   `json:"actives"`
 	// Playbook is the user's strategy file, verbatim.
-	Playbook string
+	Playbook string `json:"playbook"`
 	// Warnings lists sources that were unavailable, so the model and the reader
 	// both know what the briefing was written without.
-	Warnings []string
+	Warnings []string `json:"warnings"`
 }
 
 // Location resolves Timezone, falling back to whatever zone GeneratedAt carries.
@@ -55,22 +63,25 @@ func (in Input) Location() *time.Location {
 }
 
 type SymbolRead struct {
-	Symbol    string
-	Last      float64
-	PrevClose float64
-	ChangePct float64
-	Headlines []market.Headline
+	Symbol    string            `json:"symbol"`
+	Last      float64           `json:"last"`
+	PrevClose float64           `json:"prev_close"`
+	ChangePct float64           `json:"change_pct"`
+	Headlines []market.Headline `json:"headlines"`
 }
 
 // Output is the model's reply, validated against Schema before it is trusted.
 // Numeric fields are pointers so a model can say "unknown" instead of inventing.
 type Output struct {
-	MarketRead   string      `json:"market_read"`
-	RegimeNote   string      `json:"regime_note"`
-	CalendarNote string      `json:"calendar_note"`
-	Call         Call        `json:"call"`
-	Watchlist    []WatchNote `json:"watchlist"`
-	Risks        []string    `json:"risks"`
+	MarketRead   string `json:"market_read"`
+	RegimeNote   string `json:"regime_note"`
+	CalendarNote string `json:"calendar_note"`
+	Call         Call   `json:"call"`
+	// Proposals are the session's trade ideas, unsized: SizeProposals turns each
+	// one into a share count from the risk limits.
+	Proposals []Proposal  `json:"proposals"`
+	Watchlist []WatchNote `json:"watchlist"`
+	Risks     []string    `json:"risks"`
 }
 
 type WatchNote struct {

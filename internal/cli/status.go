@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 
@@ -60,9 +61,45 @@ func newStatusCmd() *cobra.Command {
 			pair(tw, "status", marketState(clock))
 			pair(tw, "next open", stamp(clock.NextOpen, a.loc))
 			pair(tw, "next close", stamp(clock.NextClose, a.loc))
-			return tw.Flush()
+			if err := tw.Flush(); err != nil {
+				return err
+			}
+			return printRisk(ctx, a)
 		},
 	}
+}
+
+// printRisk shows the walls every entry clears, the count of times they fired
+// today, and whether the day is already over.
+func printRisk(ctx context.Context, a *app) error {
+	l := a.engine.Limits()
+	equity, err := a.engine.Equity(ctx)
+	if err != nil {
+		return err
+	}
+	// Refusals are filed under the session they belong to, which after 22:00
+	// Mountain is already tomorrow's.
+	day := a.slateDay(ctx)
+	refusals, err := a.jnl.RefusalCount(ctx, a.cfg.Mode, day, day)
+	if err != nil {
+		return err
+	}
+	halted, why, err := a.engine.Halted(ctx)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintln(a.out, "\nRisk (enforced in Go)")
+	tw := table(a.out)
+	pair(tw, "per trade", fmt.Sprintf("%s%% of equity = %s", trimPct(l.PerTradePct), money(equity*l.PerTradePct/100)))
+	pair(tw, "max positions", strconv.Itoa(l.MaxPositions))
+	pair(tw, "daily loss limit", fmt.Sprintf("%d closed losses", l.MaxDailyLosses))
+	pair(tw, "entries stop", fmt.Sprintf("%d min before the close", l.NoEntriesBeforeCloseMinutes))
+	pair(tw, "refusals today", strconv.Itoa(refusals))
+	if halted {
+		pair(tw, "HALT", why)
+	}
+	return tw.Flush()
 }
 
 func marketState(c broker.Clock) string {

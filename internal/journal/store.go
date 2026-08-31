@@ -160,3 +160,25 @@ func floatPtr(n sql.NullFloat64) *float64 {
 	v := n.Float64
 	return &v
 }
+
+func nullQty(p *int) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+func nullInt(p *int64) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+func intPtr(n sql.NullInt64) *int64 {
+	if !n.Valid {
+		return nil
+	}
+	v := n.Int64
+	return &v
+}

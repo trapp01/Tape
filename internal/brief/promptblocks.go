@@ -2,11 +2,13 @@ package brief
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/trapp01/tape/internal/calendar"
 	"github.com/trapp01/tape/internal/market"
+	"github.com/trapp01/tape/internal/risk"
 )
 
 // The blocks below render one Input section each. Anything a venue or a news
@@ -25,6 +27,36 @@ func sessionLine(in Input, loc *time.Location) string {
 		parts = append(parts, "next close "+stamp(in.NextClose, loc))
 	}
 	return strings.Join(parts, ", ")
+}
+
+// writeLimits shows the walls the desk enforces, so a proposal is planned inside
+// them. Unset limits print nothing rather than a table of zeroes.
+func writeLimits(b *strings.Builder, l risk.Limits) {
+	if l.PerTradePct <= 0 {
+		return
+	}
+	b.WriteString("\nRISK LIMITS (enforced in code; you cannot move them)\n")
+	fmt.Fprintf(b, "  per trade      %s%% of equity, lost at the stop\n", num(l.PerTradePct))
+	if l.RequireStop {
+		b.WriteString("  stop           required on every entry\n")
+	}
+	if l.MaxPositions > 0 {
+		fmt.Fprintf(b, "  max positions  %d\n", l.MaxPositions)
+	}
+	if l.MinRewardRisk > 0 {
+		fmt.Fprintf(b, "  reward/risk    %sR or better\n", num(l.MinRewardRisk))
+	}
+	if l.MaxEntryDeviationPct > 0 {
+		fmt.Fprintf(b, "  entry          within %s%% of the last price\n", num(l.MaxEntryDeviationPct))
+	}
+	if l.NoEntriesBeforeCloseMinutes > 0 {
+		fmt.Fprintf(b, "  new entries    stop %d minutes before the close\n", l.NoEntriesBeforeCloseMinutes)
+	}
+}
+
+// num renders a limit without trailing zeroes, so 0.5 reads as "0.5".
+func num(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64)
 }
 
 func writeSymbols(b *strings.Builder, header string, reads []SymbolRead) {

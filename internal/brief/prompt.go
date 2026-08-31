@@ -43,8 +43,16 @@ Rules:
   day's ceiling.
 - The call of the day is one instrument, one direction, and falsifiable: it must be gradeable
   against that instrument's open and close today, and its invalidation must be a specific
-  observation ("SPY trades below 509.80, yesterday's low") rather than a mood.
-- You place no orders and size nothing. Risk limits live in code.
+  observation ("SPY trades below 509.80, yesterday's low") rather than a mood. It is required
+  every morning, whatever the proposals say.
+- Propose zero to three trades. Zero is a real answer: when the regime posture or an N1 condition
+  says stand down, leave proposals empty and let the watchlist note on the symbol you would
+  otherwise have traded say why.
+- Every proposal is long, names a symbol from the INDEXES or WATCHLIST blocks, and cites a setup
+  id the playbook defines. Entry, stop and target are all required prices, with the stop below the
+  entry and the target above it. An idea missing one of them is a watchlist note, not a proposal.
+- You place no orders and size nothing. The RISK LIMITS block is enforced in code, so plan inside
+  it; share count, risk dollars and reward/risk are computed there from the prices you give.
 - Say what is missing. The source warnings list what this briefing was written without; if one of
   them undercuts a read, put it in risks.
 
@@ -97,7 +105,8 @@ func renderInput(in Input, opts renderOpts) string {
 	b.WriteString("TIME\n")
 	fmt.Fprintf(&b, "  now      %s\n", stamp(in.GeneratedAt, loc))
 	fmt.Fprintf(&b, "  session  %s\n", sessionLine(in, loc))
-	fmt.Fprintf(&b, "\nACCOUNT\n  mode     %s\n  cash     $%.2f\n", in.Mode, in.LedgerCash)
+	fmt.Fprintf(&b, "\nACCOUNT\n  mode     %s\n  cash     $%.2f\n  equity   $%.2f\n", in.Mode, in.LedgerCash, in.Equity)
+	writeLimits(&b, in.Limits)
 
 	writeSymbols(&b, "INDEXES", in.Indexes)
 	b.WriteString("\nREGIME\n")

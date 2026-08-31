@@ -150,6 +150,9 @@ func (a *app) briefDeps(force bool) (brief.Deps, error) {
 		Ledger: func(ctx context.Context) (journal.Ledger, error) {
 			return a.jnl.Ledger(ctx, a.cfg.Mode)
 		},
+		Equity:   a.engine.Equity,
+		Cash:     a.engine.FreeCash,
+		Limits:   riskLimits(a.cfg),
 		Playbook: text,
 		Journal:  a.jnl,
 		Mode:     a.cfg.Mode,

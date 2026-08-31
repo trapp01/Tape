@@ -82,6 +82,8 @@ func TestBriefRenderGolden(t *testing.T) {
 			Gainers:   []market.Mover{{Symbol: "ABCD", PercentChg: 12.3}},
 			Losers:    []market.Mover{{Symbol: "WXYZ", PercentChg: -8.4}},
 			Warnings:  []string{"FRED calendar unavailable: FRED_API_KEY not set"},
+			Equity:    5000,
+			Playbook:  "### M2 momentum continuation above prior high\n\n### R1 range-edge mean reversion\n",
 		},
 		Output: brief.Output{
 			MarketRead:   "Breadth is narrow.",
@@ -96,6 +98,19 @@ func TestBriefRenderGolden(t *testing.T) {
 		},
 		Briefing: journal.Briefing{ID: 12, Model: "fake-model-1", InputTokens: 41200, OutputTokens: 1100, LatencyMs: 38000, CostUSD: &cost},
 		Call:     &journal.Call{ActualPct: &actual, Correct: &correct},
+		Proposals: []journal.Proposal{
+			{
+				Index: 1, Symbol: "NVDA", Side: "long", SetupID: "M2",
+				Entry: 128.40, Stop: 126.90, Target: 131.40, Qty: 16, RiskUSD: 24,
+				Thesis: "Holds the breakout shelf.", Invalidation: "Loses 126.90 on volume.",
+				Confidence: "medium", Status: journal.ProposalProposed,
+			},
+			{
+				Index: 2, Symbol: "COST", Side: "long", SetupID: "R1",
+				Entry: 880, Stop: 875, Target: 886, Status: journal.ProposalRejected,
+				Reason: "reward/risk 1.2 is under the 1.5 minimum (rule: reward/risk)",
+			},
+		},
 	}
 	renderBriefing(a, res, true)
 
@@ -107,6 +122,13 @@ REGIME   uptrend, low vol (SPY 512.10 above 20d 505.30 and 50d 498.80; 20d vol 1
 CALL     SPY up ≥0.3% open→close   [✓ +0.42%]
          M2: price above the 20d.
          invalid if: SPY trades below 509.80.
+PROPOSALS (2)
+  #1  LONG NVDA — M2 momentum continuation above prior high
+      entry 128.40  stop 126.90  target 131.40  size 16 sh (~$2,054 · risks $24 = 0.5%)  2.0R
+      thesis: Holds the breakout shelf.
+      invalid if: Loses 126.90 on volume.   confidence: medium
+  #2  LONG COST — R1 range-edge mean reversion   ✗ rejected: reward/risk 1.2 is under the 1.5 minimum (rule: reward/risk)
+act: tape take 1 · tape pass 1 --reason "…" · tape why 1
 CALENDAR
   08:30     CPI (high)
          CPI is the session's only scheduled risk.

@@ -13,7 +13,9 @@ import (
 // venue, and tape has to see it. Before the fix pos showed the position forever,
 // the proceeds never reached cash, and sell would have shorted the symbol.
 func TestBracketStopFillFlattensTheJournal(t *testing.T) {
-	newHome(t, "5000")
+	// The $5 stop on ten shares risks $50, so the ledger has to be big enough for
+	// the 0.5% per-trade cap to allow it.
+	newHome(t, "11000")
 	fb := fake.New()
 	fb.SetPrice("AAPL", 100)
 	useFake(t, fb)
@@ -65,13 +67,100 @@ func restingStopID(t *testing.T, fb *fake.Broker) string {
 	return ""
 }
 
+// cancelRestingStop frees the shares a bracket has committed, which is what a
+// trader does before closing the position by hand.
+func cancelRestingStop(t *testing.T, fb *fake.Broker) {
+	t.Helper()
+	if err := fb.CancelOrder(context.Background(), restingStopID(t, fb)); err != nil {
+		t.Fatalf("cancelling the stop leg: %v", err)
+	}
+}
+
+// A bracket rests a stop and a target over the whole position, and counting
+// both left every share committed. `tape sell` then refused the exit for a
+// position tape itself had opened, with no way out but eod.
+func TestSellClearsItsOwnBracketLegs(t *testing.T) {
+	newHome(t, "11000")
+	fb := fake.New()
+	fb.SetPrice("NVDA", 100)
+	useFake(t, fb)
+
+	if _, err := run(t, "buy", "NVDA", "10", "--stop", "95", "--target", "110"); err != nil {
+		t.Fatalf("bracket buy: %v", err)
+	}
+
+	out, err := run(t, "sell", "NVDA", "10")
+	if err != nil {
+		t.Fatalf("the exit must not be trapped by its own bracket: %v", err)
+	}
+	if !strings.Contains(out, "cancelled 2 resting bracket legs for NVDA") {
+		t.Fatalf("sell must say what it took off the books:\n%s", out)
+	}
+
+	pos, err := run(t, "pos")
+	if err != nil {
+		t.Fatalf("pos: %v", err)
+	}
+	if !strings.Contains(pos, "flat: the ledger holds nothing.") {
+		t.Fatalf("the exit did not close the position:\n%s", pos)
+	}
+}
+
+// The gap the review found twice: an order rests and nothing but eod takes it
+// off the books.
+func TestCancelByIDAndAll(t *testing.T) {
+	newHome(t, "11000")
+	fb := fake.New()
+	fb.SetPrice("NVDA", 100)
+	fb.SetPrice("AAPL", 50)
+	useFake(t, fb)
+	shortPoll(t)
+
+	if _, err := run(t, "cancel"); err == nil || !strings.Contains(err.Error(), "--all") {
+		t.Fatalf("cancelling nothing in particular must be refused, got: %v", err)
+	}
+	if _, err := run(t, "buy", "NVDA", "10", "--limit", "98", "--stop", "96"); err != nil {
+		t.Fatalf("resting NVDA buy: %v", err)
+	}
+	if _, err := run(t, "buy", "AAPL", "10", "--limit", "49", "--stop", "47.50"); err != nil {
+		t.Fatalf("resting AAPL buy: %v", err)
+	}
+
+	out, err := run(t, "cancel", "1")
+	if err != nil {
+		t.Fatalf("cancel 1: %v", err)
+	}
+	if !strings.Contains(out, "cancelled 1 order(s)") || !strings.Contains(out, "NVDA") {
+		t.Fatalf("cancel output:\n%s", out)
+	}
+
+	out, err = run(t, "cancel", "--all")
+	if err != nil {
+		t.Fatalf("cancel --all: %v", err)
+	}
+	if !strings.Contains(out, "AAPL") {
+		t.Fatalf("cancel --all must reach the order still working:\n%s", out)
+	}
+
+	open, err := run(t, "orders", "--open")
+	if err != nil {
+		t.Fatalf("orders --open: %v", err)
+	}
+	if strings.Contains(open, "NVDA") || strings.Contains(open, "AAPL") {
+		t.Fatalf("orders are still open after cancelling everything:\n%s", open)
+	}
+	if _, err := run(t, "cancel", "1"); err == nil || !strings.Contains(err.Error(), "already") {
+		t.Fatalf("cancelling a terminal order must say so, got: %v", err)
+	}
+}
+
 func TestBuySellPosAndEOD(t *testing.T) {
 	newHome(t, "5000")
 	fb := fake.New()
 	fb.SetPrice("AAPL", 100)
 	useFake(t, fb)
 
-	out, err := run(t, "buy", "aapl", "10", "--note", "range break")
+	out, err := run(t, "buy", "aapl", "10", "--stop", "98", "--note", "range break")
 	if err != nil {
 		t.Fatalf("buy: %v", err)
 	}
@@ -95,6 +184,9 @@ func TestBuySellPosAndEOD(t *testing.T) {
 		}
 	}
 
+	// The bracket's stop leg has all ten shares spoken for, so it comes off the
+	// books before any of them can be sold by hand.
+	cancelRestingStop(t, fb)
 	if _, err := run(t, "sell", "AAPL", "4"); err != nil {
 		t.Fatalf("sell: %v", err)
 	}
@@ -130,7 +222,7 @@ func TestSellFillRowShowsNetProceeds(t *testing.T) {
 	fb.SetPrice("AAPL", 100)
 	useFake(t, fb)
 
-	out, err := run(t, "buy", "AAPL", "10")
+	out, err := run(t, "buy", "AAPL", "10", "--stop", "98")
 	if err != nil {
 		t.Fatalf("buy: %v", err)
 	}
@@ -139,6 +231,7 @@ func TestSellFillRowShowsNetProceeds(t *testing.T) {
 		t.Fatalf("buy fill row must total the cost:\n%s", out)
 	}
 
+	cancelRestingStop(t, fb)
 	out, err = run(t, "sell", "AAPL", "10")
 	if err != nil {
 		t.Fatalf("sell: %v", err)
@@ -174,7 +267,9 @@ func TestBuyBeyondCashIsRefusedWithNumbers(t *testing.T) {
 	fb.SetPrice("NVDA", 128.40)
 	useFake(t, fb)
 
-	_, err := run(t, "buy", "NVDA", "16")
+	// A stop this tight keeps the entry inside the risk cap, so the refusal that
+	// fires is the one about cash.
+	_, err := run(t, "buy", "NVDA", "16", "--stop", "128.30")
 	if err == nil {
 		t.Fatal("want a refusal")
 	}

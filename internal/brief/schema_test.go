@@ -129,6 +129,28 @@ func TestSchemaEnumsAndLimits(t *testing.T) {
 	if props["risks"].(map[string]any)["maxItems"] != float64(MaxRisks) {
 		t.Errorf("risks maxItems = %v, want %d", props["risks"].(map[string]any)["maxItems"], MaxRisks)
 	}
+
+	proposals := props["proposals"].(map[string]any)
+	if proposals["maxItems"] != float64(MaxProposals) {
+		t.Errorf("proposals maxItems = %v, want %d", proposals["maxItems"], MaxProposals)
+	}
+	proposal := proposals["items"].(map[string]any)["properties"].(map[string]any)
+	side := stringsOf(proposal["side"].(map[string]any)["enum"])
+	if !reflect.DeepEqual(side, []string{SideLong}) {
+		t.Errorf("side enum = %v, want just %q", side, SideLong)
+	}
+	confidence := stringsOf(proposal["confidence"].(map[string]any)["enum"])
+	if !reflect.DeepEqual(confidence, []string{"low", "medium", "high"}) {
+		t.Errorf("confidence enum = %v", confidence)
+	}
+	// The prices are plain numbers: Go range-checks them against each other and
+	// against the last quote, which no schema keyword can express.
+	for _, name := range []string{"entry", "stop", "target"} {
+		field := proposal[name].(map[string]any)
+		if field["type"] != "number" {
+			t.Errorf("%s type = %v, want number", name, field["type"])
+		}
+	}
 }
 
 func TestSchemaMatchesOutputFields(t *testing.T) {
@@ -150,6 +172,14 @@ func TestSchemaMatchesOutputFields(t *testing.T) {
 	sort.Strings(callGot)
 	if !reflect.DeepEqual(callGot, callWant) {
 		t.Errorf("call properties = %v, Call fields = %v", callGot, callWant)
+	}
+
+	proposalWant := jsonTagsOf(reflect.TypeOf(Proposal{}))
+	proposalGot := stringsOf(doc["properties"].(map[string]any)["proposals"].(map[string]any)["items"].(map[string]any)["required"])
+	sort.Strings(proposalWant)
+	sort.Strings(proposalGot)
+	if !reflect.DeepEqual(proposalGot, proposalWant) {
+		t.Errorf("proposal properties = %v, Proposal fields = %v", proposalGot, proposalWant)
 	}
 }
 
@@ -215,6 +245,17 @@ func TestOutputRoundTrips(t *testing.T) {
 			Rationale:    "M2: yesterday's high held on the retest.",
 			Invalidation: "A close back under 512.00 in the first hour.",
 		},
+		Proposals: []Proposal{{
+			Symbol:       "NVDA",
+			Side:         SideLong,
+			SetupID:      "M2",
+			Entry:        128.40,
+			Stop:         126.90,
+			Target:       131.40,
+			Thesis:       "Yesterday's high turned into support on the retest.",
+			Invalidation: "A five-minute close back under 127.80.",
+			Confidence:   ConfidenceMedium,
+		}},
 		Watchlist: []WatchNote{
 			{Symbol: "NVDA", Bias: "bullish", Note: "Above the prior high with volume."},
 			{Symbol: "TSLA", Bias: "neutral", Note: "Inside yesterday's range."},

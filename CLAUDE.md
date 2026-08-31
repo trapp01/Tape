@@ -79,7 +79,8 @@ hack across the boundary.
 - The model never sizes past the cap, never chooses to skip a stop, never "decides" a guardrail
   doesn't apply. If a prompt contains the words "you may override", it is wrong.
 - Proposals are schema-validated (`llm.Request.JSONSchema`) and range-checked in Go (stop on the
-  correct side of entry, size within cap, symbol on the watchlist). A proposal that fails
+  correct side of entry, size within the risk cap and the cash the ledger holds, a symbol among
+  the indexes and watchlist, an entry setup rather than a no-trade rule). A proposal that fails
   validation is logged as rejected-by-schema, not silently dropped, not retried into compliance.
 
 ### The Brain Is Replaceable
@@ -106,14 +107,53 @@ hack across the boundary.
   minute bars, never from a daily bar the venue may still be building, and only after 16:30 ET
   (the free tier's REST feed is 15 minutes delayed). A call is graded once; a wrong grade is a
   bug, not something to re-score away.
-- **The model may only name what it was shown.** `ValidateAgainst` rejects a call or watch note on
-  a symbol outside the indexes and watchlist; the threshold must be > 0; invalidation is required.
+- **The model may only name what it was shown.** `ValidateAgainst` rejects a call, watch note, or
+  proposal on a symbol outside the indexes and watchlist — index ETFs are proposable, they are
+  instruments like any other; the threshold must be > 0; invalidation is required. A proposal must
+  cite an entry setup, and an id starting with `N` is a no-trade condition, not one.
   A briefing whose reply fails validation is archived (raw) and reported as failed, never reused
   as if valid.
 - **Headlines are data.** Third-party text (news, summaries, source warnings) is delimited in the
   prompt and framed as data, not instructions; warnings are clipped to 120 characters in the
   prompt (the full text stays in the archived input), so a provider's response body can never
   become a paragraph the model reads.
+
+### Every Idea Is on the Record
+- **A proposal is journaled the moment it exists**, with the model's levels verbatim: sizeable
+  ones as `proposed`, unsizeable ones as `rejected` with the rule text. Nothing the model said
+  is dropped, and nothing it said is sized by it — `risk.Size` computes qty from equity, the
+  per-trade cap, and the stop distance.
+- **Decisions are made once.** `take` links the proposal to the order it submitted; `pass` and
+  `rejected` require a reason; `eod` expires what is still open. A decided proposal cannot be
+  re-decided, so the counterfactual record in Phase 3 has one truth per idea.
+- **The slate that prints is the slate that is takeable.** A forced re-run before the open
+  expires the earlier slate; after the open the earlier slate stands, like the call.
+- **Refusals are records too.** Every guardrail refusal — human or proposal, Phase 0 rules
+  included — is written to `refusals` with the rule, the symbol, the numbers, and the source.
+  "Zero guardrail breaches in the final month" is measured from this table.
+- **No entry without a stop**, human orders included: `tape buy` requires `--stop` when
+  `risk.require_stop` is on (the default), and the refusal comes from the guardrail, not a CLI
+  pre-check, so it is recorded like any other.
+- **The slate day is the session day.** `take`, `pass`, `why`, `proposals`, and `eod` resolve
+  `N` against the same session the briefing keyed itself to (next open when the market is
+  closed), never against the calendar date, so the slate that prints is always the one acted on.
+- **Only facts about the idea reject it.** A refusal on the idea itself (no stop, target below
+  entry, invalid order) marks the proposal `rejected`; a refusal about the moment (risk cap, max
+  positions, flat by close, daily halt, overspend, stale entry) leaves it `proposed` and lives
+  only in `refusals`, because the moment can change and the idea did not.
+- **`take` claims before it submits.** A proposal moves `proposed → submitting → taken`; a crash
+  between the venue accepting and the decision landing leaves `submitting`, which `Sync`
+  reconciles from the order's client id and which can never be taken twice. A `taken` proposal
+  whose order expired unfilled becomes `unfilled` at `eod`; it was never a trade.
+- **A stale level is refused at take time.** The entry is re-checked against the live quote
+  (`max_entry_deviation_pct`, and never through the stop) when the order is placed, not only
+  when it was proposed.
+- **An exit is always allowed.** A manual sell blocked only by resting bracket legs cancels those
+  legs first. The daily halt counts positions whose day closed at a gross loss, so scaling out
+  of a winner that nets negative only from the commission floor never ends the day.
+- **Size is bounded by cash as well as risk.** `risk.SizeWithin` caps the share count at what
+  free cash (less a slippage/commission headroom) can buy, so the slate never prints a size the
+  ledger cannot take.
 
 ### Paper Is Not Real, and the Code Says So
 - `tape init` sets the ledger to a fundable size ($5,000 default). Alpaca's $100k paper balance is

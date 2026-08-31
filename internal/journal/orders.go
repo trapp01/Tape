@@ -25,7 +25,7 @@ type ListFilter struct {
 
 const orderColumns = `id, broker_order_id, client_order_id, symbol, side, qty, type,
 	limit_price, stop_loss, take_profit, status, filled_qty, filled_avg_price,
-	source, mode, note, submitted_at, updated_at`
+	source, proposal_id, parent_order_id, mode, note, submitted_at, updated_at`
 
 // terminalStatuses can take no further fills, so OpenOnly excludes them.
 var terminalStatuses = []string{
@@ -54,14 +54,15 @@ func (s *Store) InsertOrder(ctx context.Context, o *Order) error {
 	const insert = `INSERT INTO orders (
 		broker_order_id, client_order_id, symbol, side, qty, type,
 		limit_price, stop_loss, take_profit, status, filled_qty, filled_avg_price,
-		source, mode, note, submitted_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		source, proposal_id, parent_order_id, mode, note, submitted_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	res, err := s.db.ExecContext(ctx, insert,
 		o.BrokerOrderID, o.ClientOrderID, o.Symbol, o.Side, o.Qty, o.Type,
 		nullFloat(o.LimitPrice), nullFloat(o.StopLoss), nullFloat(o.TakeProfit),
 		o.Status, o.FilledQty, nullFloat(o.FilledAvgPrice),
-		o.Source, o.Mode, o.Note, formatTime(o.SubmittedAt), formatTime(o.UpdatedAt))
+		o.Source, nullInt(o.ProposalID), o.ParentOrderID, o.Mode, o.Note,
+		formatTime(o.SubmittedAt), formatTime(o.UpdatedAt))
 	if err != nil {
 		return fmt.Errorf("journal: insert order %s %d %s: %w", o.Side, o.Qty, o.Symbol, err)
 	}
@@ -116,6 +117,20 @@ func (s *Store) UpdateOrder(ctx context.Context, brokerOrderID string, status st
 // OrderByBrokerID returns the order with the given venue id, or ErrNotFound.
 func (s *Store) OrderByBrokerID(ctx context.Context, id string) (Order, error) {
 	return s.orderBy(ctx, "broker_order_id", id)
+}
+
+// OrderByID returns the journal row with the given id, or ErrNotFound. It is the
+// number the trader types in `tape cancel`.
+func (s *Store) OrderByID(ctx context.Context, id int64) (Order, error) {
+	query := `SELECT ` + orderColumns + ` FROM orders WHERE id = ?`
+	o, err := scanOrder(s.db.QueryRowContext(ctx, query, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Order{}, fmt.Errorf("journal: order #%d: %w", id, ErrNotFound)
+	}
+	if err != nil {
+		return Order{}, fmt.Errorf("journal: order #%d: %w", id, err)
+	}
+	return o, nil
 }
 
 // OrderByClientID returns the order with the given client id, or ErrNotFound.
@@ -194,12 +209,13 @@ func scanOrder(sc scanner) (Order, error) {
 		stopLoss    sql.NullFloat64
 		takeProfit  sql.NullFloat64
 		filledAvg   sql.NullFloat64
+		proposalID  sql.NullInt64
 		submittedAt string
 		updatedAt   string
 	)
 	err := sc.Scan(&o.ID, &o.BrokerOrderID, &o.ClientOrderID, &o.Symbol, &o.Side, &o.Qty, &o.Type,
 		&limitPrice, &stopLoss, &takeProfit, &o.Status, &o.FilledQty, &filledAvg,
-		&o.Source, &o.Mode, &o.Note, &submittedAt, &updatedAt)
+		&o.Source, &proposalID, &o.ParentOrderID, &o.Mode, &o.Note, &submittedAt, &updatedAt)
 	if err != nil {
 		return Order{}, err
 	}
@@ -207,6 +223,7 @@ func scanOrder(sc scanner) (Order, error) {
 	o.StopLoss = floatPtr(stopLoss)
 	o.TakeProfit = floatPtr(takeProfit)
 	o.FilledAvgPrice = floatPtr(filledAvg)
+	o.ProposalID = intPtr(proposalID)
 	if o.SubmittedAt, err = parseTime(submittedAt); err != nil {
 		return Order{}, err
 	}
