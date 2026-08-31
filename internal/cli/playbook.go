@@ -49,6 +49,37 @@ func newPlaybookCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&write, "write", false, "create the default playbook if none exists")
+	cmd.AddCommand(newPlaybookVersionsCmd())
+	return cmd
+}
+
+func newPlaybookVersionsCmd() *cobra.Command {
+	var limit int
+
+	cmd := &cobra.Command{
+		Use:   "versions",
+		Short: "List the playbook snapshots the gate reads from",
+		Long: "Every applied edit, and every change to the risk, cost, or model config, is a\n" +
+			"snapshot. The gate reads only the sessions after the newest one, so a rule fitted\n" +
+			"to the record is never graded on the record that produced it.\n" +
+			"Listing is a read: the snapshot itself is taken by stats, gate, and retro.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			a, err := newRecordApp(cmd, "playbook versions")
+			if err != nil {
+				return err
+			}
+			defer a.Close()
+
+			versions, err := a.jnl.ListPlaybookVersions(cmd.Context(), limit)
+			if err != nil {
+				return err
+			}
+			renderVersions(a, versions)
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&limit, "limit", 20, "how many snapshots to list, newest first")
 	return cmd
 }
 

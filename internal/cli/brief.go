@@ -66,6 +66,7 @@ type marketFeed interface {
 	market.SnapshotProvider
 	market.BarsProvider
 	market.SessionProvider
+	market.IntradayProvider
 	market.MoversProvider
 	market.NewsProvider
 }
@@ -102,6 +103,9 @@ func newBriefCmd() *cobra.Command {
 			}
 			if dryRun {
 				return dryRunBrief(cmd.Context(), a, deps)
+			}
+			if err := a.ensureVersion(cmd.Context()); err != nil {
+				return err
 			}
 
 			provider, err := newLLMProvider(a.cfg)

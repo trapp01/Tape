@@ -10,6 +10,12 @@ import (
 	"github.com/trapp01/tape/internal/market"
 )
 
+// callDeps is a scoring pass with only the call sources wired: no intraday feed,
+// so the replays are somebody else's test.
+func callDeps(st *journal.Store, feed market.SessionProvider) ScoreDeps {
+	return ScoreDeps{Journal: st, Sessions: feed, Mode: journal.ModePaper, DefaultThresholdPct: 0.3}
+}
+
 // fileCallOn archives a briefing and its call so there is something to grade.
 func fileCallOn(t *testing.T, st *journal.Store, day, instrument, direction string, threshold float64) journal.Call {
 	t.Helper()
@@ -52,7 +58,7 @@ func TestScoreDueGradesTheCallsOwnSession(t *testing.T) {
 	fileCallOn(t, st, "2026-08-31", "SPY", "up", 0.3)
 	feed := sessionFeed(map[string][2]float64{"2026-08-28": {400, 404}, "2026-08-31": {500, 510}})
 
-	report, err := ScoreDue(context.Background(), st, feed, journal.ModePaper, "2026-08-31")
+	report, err := ScoreDue(context.Background(), callDeps(st, feed), "2026-08-31")
 	if err != nil {
 		t.Fatalf("ScoreDue: %v", err)
 	}
@@ -74,7 +80,7 @@ func TestScoreDueGradesAFridayCall(t *testing.T) {
 	fileCallOn(t, st, "2026-08-28", "SPY", "up", 0.3)
 	feed := sessionFeed(map[string][2]float64{"2026-08-28": {510, 512.55}})
 
-	report, err := ScoreDue(context.Background(), st, feed, journal.ModePaper, "2026-08-28")
+	report, err := ScoreDue(context.Background(), callDeps(st, feed), "2026-08-28")
 	if err != nil {
 		t.Fatalf("ScoreDue: %v", err)
 	}
@@ -88,7 +94,7 @@ func TestScoreDueGradesAgainstTheSession(t *testing.T) {
 	call := fileCallOn(t, st, "2026-08-28", "SPY", "up", 0.3)
 	feed := sessionFeed(map[string][2]float64{"2026-08-28": {510, 512.55}})
 
-	report, err := ScoreDue(context.Background(), st, feed, journal.ModePaper, "2026-08-28")
+	report, err := ScoreDue(context.Background(), callDeps(st, feed), "2026-08-28")
 	if err != nil {
 		t.Fatalf("ScoreDue: %v", err)
 	}
@@ -122,7 +128,7 @@ func TestScoreDueSkipsAnIncompleteSession(t *testing.T) {
 	running.Complete = false
 	feed.sessions[sessionKey("SPY", "2026-08-28")] = running
 
-	report, err := ScoreDue(context.Background(), st, feed, journal.ModePaper, "2026-08-28")
+	report, err := ScoreDue(context.Background(), callDeps(st, feed), "2026-08-28")
 	if err != nil {
 		t.Fatalf("ScoreDue: %v", err)
 	}
@@ -148,7 +154,7 @@ func TestScoreDueSkipsAMissingSession(t *testing.T) {
 	fileCallOn(t, st, "2026-08-28", "SPY", "up", 0.3)
 	feed := sessionFeed(map[string][2]float64{"2026-08-27": {510, 512.55}})
 
-	report, err := ScoreDue(context.Background(), st, feed, journal.ModePaper, "2026-08-28")
+	report, err := ScoreDue(context.Background(), callDeps(st, feed), "2026-08-28")
 	if err != nil {
 		t.Fatalf("ScoreDue: %v", err)
 	}
@@ -174,10 +180,10 @@ func TestScoreDueNeverRescores(t *testing.T) {
 	fileCallOn(t, st, "2026-08-28", "SPY", "down", 0.3)
 	feed := sessionFeed(map[string][2]float64{"2026-08-28": {510, 512.55}})
 
-	if _, err := ScoreDue(context.Background(), st, feed, journal.ModePaper, "2026-08-28"); err != nil {
+	if _, err := ScoreDue(context.Background(), callDeps(st, feed), "2026-08-28"); err != nil {
 		t.Fatalf("first pass: %v", err)
 	}
-	second, err := ScoreDue(context.Background(), st, feed, journal.ModePaper, "2026-08-28")
+	second, err := ScoreDue(context.Background(), callDeps(st, feed), "2026-08-28")
 	if err != nil {
 		t.Fatalf("second pass: %v", err)
 	}
@@ -193,7 +199,7 @@ func TestScoreDueUsesTheStoredThreshold(t *testing.T) {
 	fileCallOn(t, st, "2026-08-28", "SPY", "up", 0.8)
 	feed := sessionFeed(map[string][2]float64{"2026-08-28": {510, 511.02}})
 
-	report, err := ScoreDue(context.Background(), st, feed, journal.ModePaper, "2026-08-28")
+	report, err := ScoreDue(context.Background(), callDeps(st, feed), "2026-08-28")
 	if err != nil {
 		t.Fatalf("ScoreDue: %v", err)
 	}
@@ -213,7 +219,7 @@ func TestScoreDueRefusesAStoredZeroThreshold(t *testing.T) {
 	fileCallOn(t, st, "2026-08-28", "SPY", "up", 0)
 	feed := sessionFeed(map[string][2]float64{"2026-08-28": {510, 511.02}})
 
-	report, err := ScoreDue(context.Background(), st, feed, journal.ModePaper, "2026-08-28")
+	report, err := ScoreDue(context.Background(), callDeps(st, feed), "2026-08-28")
 	if err != nil {
 		t.Fatalf("ScoreDue: %v", err)
 	}
@@ -235,7 +241,7 @@ func TestAccuracyCountsTheTrailingWindow(t *testing.T) {
 			close = 509.0
 		}
 		feed := sessionFeed(map[string][2]float64{day: {510, close}})
-		if _, err := ScoreDue(context.Background(), st, feed, journal.ModePaper, day); err != nil {
+		if _, err := ScoreDue(context.Background(), callDeps(st, feed), day); err != nil {
 			t.Fatalf("scoring %s: %v", day, err)
 		}
 	}

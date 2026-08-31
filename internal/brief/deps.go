@@ -2,6 +2,7 @@ package brief
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/trapp01/tape/internal/broker"
@@ -108,16 +109,20 @@ type venue struct {
 }
 
 // session resolves the session the briefing is about: today while the market is
-// open, otherwise the next one to open. An unreadable clock counts as opened, so
-// no forced re-run replaces a call on a session that may already be running.
-func (d Deps) session(ctx context.Context) venue {
+// open, otherwise the next one to open. A clock that cannot be read fails the
+// morning: which session this is decides which call the day carries, and that
+// call locks at the open.
+func (d Deps) session(ctx context.Context) (venue, error) {
 	today := venue{day: market.SessionDate(d.now()), opened: true}
 	if d.Clock == nil {
-		return today
+		return today, nil
 	}
 	clk, err := d.Clock(ctx)
-	if err != nil || clk.IsOpen || clk.NextOpen.IsZero() {
-		return today
+	if err != nil {
+		return venue{}, fmt.Errorf("brief: reading the venue clock to name the session: %w", err)
 	}
-	return venue{day: market.SessionDate(clk.NextOpen)}
+	if clk.IsOpen || clk.NextOpen.IsZero() {
+		return today, nil
+	}
+	return venue{day: market.SessionDate(clk.NextOpen)}, nil
 }

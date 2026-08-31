@@ -76,6 +76,10 @@ type Trade struct {
 	GrossPL       float64
 	Costs         float64
 	NetPL         float64
+	// EntryOrderID and ExitOrderID are the orders behind the oldest entry lot and
+	// the closing fill, so a trade can be traced to the proposal that started it.
+	EntryOrderID int64
+	ExitOrderID  int64
 }
 
 type OpenPosition struct {
@@ -194,6 +198,109 @@ type Refusal struct {
 	Detail string
 	// Source is who attempted the order: human, proposal, or eod.
 	Source string
+}
+
+// Exit kinds for a replayed proposal.
+const (
+	ExitStop   = "stop"
+	ExitTarget = "target"
+	ExitClose  = "close"
+	ExitNone   = "none"
+)
+
+// ProposalOutcome is what a proposal would have done if taken at its levels and
+// held to its stop, its target, or the close: the counterfactual every pass,
+// expiry, and rejection is graded against, and the benchmark for every take.
+type ProposalOutcome struct {
+	ID         int64
+	ProposalID int64
+	Mode       string
+	Day        string
+	Filled     bool
+	FillPrice  *float64
+	FilledAt   *time.Time
+	ExitKind   string
+	ExitPrice  *float64
+	ExitAt     *time.Time
+	Qty        int
+	// GrossPL is the raw round trip at the venue's own prices, and Costs carries
+	// the modelled slippage as well as commissions and fees. A Trade splits them
+	// the other way — its GrossPL is already at modelled prices — so only NetPL
+	// compares across the two.
+	GrossPL   float64
+	Costs     float64
+	NetPL     float64
+	RMultiple float64
+	// Ambiguous marks a replay whose exit a single bar could not decide (stop and
+	// target inside the same minute), so the convention chose. Counted, never hidden.
+	Ambiguous bool
+	ScoredAt  time.Time
+}
+
+// NoteScore grades one watchlist bias note from a briefing against the session
+// it was written for: bullish or bearish must clear the call threshold, neutral
+// must stay inside it. Twelve of these a day give the model's read a sample size
+// the single call of the day cannot.
+type NoteScore struct {
+	ID           int64
+	BriefingID   int64
+	Mode         string
+	Day          string
+	Symbol       string
+	Bias         string
+	ThresholdPct float64
+	ScoredAt     time.Time
+	Open         float64
+	Close        float64
+	ActualPct    float64
+	Correct      bool
+}
+
+// Retro is one archived weekly review: what the model was shown, what it said,
+// and which of its proposed playbook changes the trader applied.
+type Retro struct {
+	ID           int64
+	Mode         string
+	GeneratedAt  time.Time
+	FromDay      string
+	ToDay        string
+	Provider     string
+	Model        string
+	InputJSON    []byte
+	OutputJSON   []byte
+	InputTokens  int
+	OutputTokens int
+	CostUSD      *float64
+	LatencyMs    int64
+}
+
+// RetroDiff is one proposed playbook edit inside a retro. Applied is set when
+// the trader accepts it and the playbook file changes.
+type RetroDiff struct {
+	ID        int64
+	RetroID   int64
+	Index     int
+	Section   string
+	Change    string
+	Rationale string
+	Before    string
+	After     string
+	AppliedAt *time.Time
+	VersionID *int64
+}
+
+// PlaybookVersion is a snapshot of playbook.md taken every time a retro diff is
+// applied, so a stat can always be read next to the rules in force at the time.
+type PlaybookVersion struct {
+	ID        int64
+	CreatedAt time.Time
+	SHA256    string
+	Path      string
+	RetroID   *int64
+	Note      string
+	// ConfigHash fingerprints the risk, cost, and brief config in force, so a
+	// change to any of them is a new version and restarts the gate's window.
+	ConfigHash string
 }
 
 type DayRecap struct {

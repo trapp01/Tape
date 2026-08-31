@@ -2,6 +2,7 @@ package brief
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -349,5 +350,31 @@ func TestRunRefusesWithoutAJournal(t *testing.T) {
 
 	if _, err := Run(context.Background(), d, &fakeProvider{reply: goodReply}); err == nil {
 		t.Fatal("Run must refuse to work off the record")
+	}
+}
+
+// Which session this is decides which call the day carries, and that call locks
+// at the open. A clock nobody can read is a failed morning, not a guess.
+func TestRunRefusesWhenTheClockCannotBeRead(t *testing.T) {
+	loc := mountain(t)
+	now := time.Date(2026, 8, 28, 6, 52, 0, 0, loc)
+	d := testDeps(t, fullFeed(now), now, loc)
+	d.Clock = func(context.Context) (broker.Clock, error) {
+		return broker.Clock{}, errors.New("venue unreachable")
+	}
+
+	_, err := Run(context.Background(), d, &fakeProvider{reply: goodReply})
+	if err == nil {
+		t.Fatal("Run must refuse when it cannot name the session")
+	}
+	if !strings.Contains(err.Error(), "venue clock") {
+		t.Fatalf("error = %v, want it to name the clock", err)
+	}
+	calls, err := d.Journal.CallsInRange(context.Background(), d.Mode, "2026-08-01", "2026-09-30")
+	if err != nil {
+		t.Fatalf("CallsInRange: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("a call was filed on a session nobody could name: %+v", calls)
 	}
 }

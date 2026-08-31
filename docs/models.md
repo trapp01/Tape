@@ -1,7 +1,8 @@
 # Choosing a model for Tape
 
-Tape talks to one model, once a morning. That single call is the whole product surface, so the
-choice matters more here than in a chat app where a bad answer costs you a retry.
+Tape talks to a model once a morning, and once more a week when it reviews its own record. Those are
+the only two calls it makes, so the choice matters more here than in a chat app where a bad answer
+costs you a retry.
 
 Researched 2026-08-30. Prices move; the [Sources](#sources) at the bottom are all primary and
 worth re-checking before you trust a number in here.
@@ -10,14 +11,30 @@ worth re-checking before you trust a number in here.
 
 ## The workload
 
-One request per trading day:
+Two shapes of request. The daily one, `tape brief`:
 
 | | |
 |---|---|
 | Input | headlines, quotes, calendars, and a written strategy playbook, capped at 60,000 characters |
-| Output | at most 4,096 tokens, a **strict JSON object** — the briefing, one falsifiable call, and 0–3 trade proposals carrying an entry, a stop and a target |
+| Output | at most 4,096 tokens, a **strict JSON object** — the briefing, one falsifiable call, up to twelve watchlist biases, and 0–3 trade proposals carrying an entry, a stop and a target |
 | Frequency | ~252 requests a year |
 | Deadline | under ~2 minutes, before the open |
+
+And the weekly one, `tape retro`:
+
+| | |
+|---|---|
+| Input | the scored record, under the same 60,000-character cap: the window's stats report, the whole-record gate table with its null-trader and bootstrap results, the best and worst trades by name, every vetoed idea beside the replay of what the veto cost or saved, guardrail refusals by rule, the previous review's summary, the risk limits, and `playbook.md` verbatim as the last block |
+| Output | at most 8,192 tokens, a **strict JSON object** — a summary, up to 8 findings each carrying its evidence and a confidence, and up to 5 exact playbook edits |
+| Frequency | ~52 requests a year |
+| Deadline | none. It runs when the trader sits down with it |
+
+The review's system prompt is about 2,200 characters, and both prompts share the same
+60,000-character ceiling, so nothing in the ranking below moves on account of it. What differs is the
+job. The briefing reads messy third-party text against a clock; the review reads tables tape computed
+itself and has to resist reading a story into forty trades — the harder discipline, and the one where
+paying for a better model is easiest to justify. `[retro] model` overrides `[llm] model` for the
+review alone, so the two can be different.
 
 **The costs in this document are a ceiling, not a measurement.** Every per-briefing figure below is
 worked at 60,000 input tokens and 3,000 output, which is what the workload was sized for before it
@@ -448,6 +465,31 @@ Run it at `effort: "high"` with adaptive thinking. If the morning run ever feels
 
 If quality is genuinely the only axis, **Claude Fable 5** is one step further up (AA-Omniscience
 Index 43) at $0.75 a briefing. It is not worth double for this job.
+
+### The weekly review — Claude Opus 5, whatever the briefing runs
+
+`[retro] model` overrides `[llm] model` for `tape retro` alone. Set it to `claude-opus-5` even if the
+morning briefing runs something cheaper, for two reasons that have little to do with the long-context
+row above.
+
+**The failure mode is worse.** A briefing that misreads a headline costs you one session. A review
+that reads a trend into forty trades writes it into `playbook.md`, where it shapes every session
+after — and it does so with the record's own numbers quoted underneath it, which is exactly what a
+confident wrong answer looks like. The property worth paying for here is the willingness to say the
+sample is too small, which is what the AA-Omniscience *index* rewards and what its hallucination
+*rate* is a warning about. Opus 5 is second on that index. The prompt asks for restraint in as many
+words and the schema permits an empty diff list; a model that ignores both is the one this costs you.
+
+**The budget argument is trivial.** Fifty-two reviews a year against 252 briefings, at the ceiling
+this document budgets with, is somewhere between a fifth and a quarter of the briefing bill even with
+the review's doubled output allowance. Upgrading only the review is the cheapest quality decision
+available in this repository.
+
+One implementation note. A retro diff is an exact text edit — `before` has to appear in the playbook
+character for character — so a model that paraphrases what it is quoting produces a diff Go refuses
+and archives as failed. Constrained decoding does not make a model quote accurately, but the
+families that degrade by hedging rather than by inventing are the ones that decline to propose an
+edit rather than propose one that does not match.
 
 ### Best value — Gemini 3.7 Flash
 

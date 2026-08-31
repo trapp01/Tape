@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 // minuteBars is a short session: the open, a middle print, and a bar late enough
@@ -57,6 +58,49 @@ func TestSessionRequestsTheBellToBellWindow(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The replay walks these in order, so the order and the window are the contract.
+func TestSessionBarsAreTheBellToBellMinutesOldestFirst(t *testing.T) {
+	var query url.Values
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.Query()
+		writeJSON(t, w, http.StatusOK, minuteBars)
+	})
+
+	bars, err := c.SessionBars(context.Background(), "SPY", "2026-08-28")
+	if err != nil {
+		t.Fatalf("SessionBars: %v", err)
+	}
+	for _, want := range []struct{ param, value string }{
+		{"timeframe", "1Min"},
+		{"sort", "asc"},
+		{"start", "2026-08-28T13:30:00Z"},
+		{"end", "2026-08-28T19:59:59Z"},
+	} {
+		if got := query.Get(want.param); got != want.value {
+			t.Errorf("%s = %q, want %q", want.param, got, want.value)
+		}
+	}
+
+	if len(bars) != 3 {
+		t.Fatalf("got %d bars, want 3", len(bars))
+	}
+	for i := 1; i < len(bars); i++ {
+		if !bars[i].Time.After(bars[i-1].Time) {
+			t.Fatalf("bar %d at %s does not follow %s", i, bars[i].Time, bars[i-1].Time)
+		}
+	}
+	first := bars[0]
+	if !first.Time.Equal(time.Date(2026, 8, 28, 13, 30, 0, 0, time.UTC)) {
+		t.Errorf("first bar at %s, want the 13:30Z open", first.Time)
+	}
+	if first.Open != 510.00 || first.High != 510.80 || first.Low != 509.70 || first.Close != 510.40 || first.Volume != 900000 {
+		t.Errorf("first bar = %+v, want the venue's 09:30 candle", first)
+	}
+	if bars[2].Close != 512.55 {
+		t.Errorf("last close = %v, want 512.55", bars[2].Close)
 	}
 }
 

@@ -2,6 +2,7 @@ package brief
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -109,8 +110,8 @@ func writeHeadline(b *strings.Builder, h market.Headline, indent string, loc *ti
 	if source == "" {
 		source = "unattributed"
 	}
-	fmt.Fprintf(b, "%s- %s  %s (%s)\n", indent, stamp(h.CreatedAt, loc), oneLine(h.Headline), oneLine(source))
-	if s := oneLine(h.Summary); s != "" {
+	fmt.Fprintf(b, "%s- %s  %s (%s)\n", indent, stamp(h.CreatedAt, loc), dataText(h.Headline), dataText(source))
+	if s := clipRunes(dataText(h.Summary), summaryRunes); s != "" {
 		fmt.Fprintf(b, "%s  %s\n", indent, s)
 	}
 }
@@ -171,7 +172,7 @@ func writeWarnings(b *strings.Builder, in Input) {
 	}
 	fmt.Fprintf(b, "\n%s\nthis briefing was written without these sources\n", warningsOpen)
 	for _, w := range in.Warnings {
-		fmt.Fprintf(b, "  - %s\n", clipRunes(oneLine(w), warningRunes))
+		fmt.Fprintf(b, "  - %s\n", clipRunes(dataText(w), warningRunes))
 	}
 	fmt.Fprintf(b, "%s\n", warningsClose)
 }
@@ -183,6 +184,15 @@ func stamp(t time.Time, loc *time.Location) string {
 // oneLine flattens a feed string so one story stays one row.
 func oneLine(s string) string {
 	return strings.TrimSpace(strings.Join(strings.Fields(s), " "))
+}
+
+// fenceRun matches the "=" runs the block markers are built from.
+var fenceRun = regexp.MustCompile(`={2,}`)
+
+// dataText prepares somebody else's words for a fenced block: one row, with
+// every "=" run collapsed so the text cannot close the block it sits in.
+func dataText(s string) string {
+	return fenceRun.ReplaceAllString(oneLine(s), "=")
 }
 
 // clipRunes cuts s to at most n runes, marking where it stopped.

@@ -142,6 +142,15 @@ type Broker interface {
 	Clock(ctx context.Context) (Clock, error)
 }
 
+// SessionCalendar is the venue's trading calendar. It is separate from Broker
+// because grading reads it without needing an execution client, and adapters
+// that cannot answer simply do not implement it.
+type SessionCalendar interface {
+	// SessionHours returns the regular open and close of one session, given a
+	// venue-zone date in YYYY-MM-DD. A day the venue does not trade is an error.
+	SessionHours(ctx context.Context, day string) (open, close time.Time, err error)
+}
+
 // MarketData is the quote contract. Quote streams block until ctx is cancelled.
 type MarketData interface {
 	Quote(ctx context.Context, symbol string) (Quote, error)

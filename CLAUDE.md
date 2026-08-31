@@ -155,6 +155,46 @@ hack across the boundary.
   free cash (less a slippage/commission headroom) can buy, so the slate never prints a size the
   ledger cannot take.
 
+### The Gate Must Beat Noise, Not Just a Threshold
+- **A threshold a coin flip can pass is not a gate.** `tape stats` simulates a zero-edge trader
+  with the record's own win/loss sizes at the record's own sample size (10,000 paths) and
+  reports how often that trader clears the profit-factor and drawdown thresholds; the gate
+  requires that rate ≤ `gate.max_null_pass_rate`, a bootstrap 95% lower bound on expectancy
+  above zero, and at least `gate.min_trades` trades. Slower to open is the correct direction.
+- **Fitted sessions are not evidence.** Every applied playbook diff and every change to the
+  risk, cost, or brief config is a `playbook_versions` row, and the gate reads only sessions
+  after the latest one (`Report.GateWindowFrom`). The retro fits the playbook to the record;
+  the gate may not grade the fit on the window that produced it.
+- **Conventions are counted.** Replays decided by the stop-first rule on an ambiguous bar
+  (`ProposalOutcome.Ambiguous`) and grades that landed within 5 bps of the threshold
+  (`WithinNoiseBand`) are reported next to the numbers they shape. Fill-on-touch is the other
+  optimistic convention; it is documented, not hidden.
+- **More observations beat a better story.** Every watchlist bias note is graded like the call
+  (`note_scores`), and every stat is cut by the archived regime label, so both the model's read
+  and the regime classifier are measured rather than assumed.
+- **The gate validates the strategy, not the trader.** Paper cannot reproduce the trader under
+  real loss. Phase 4 carries a kill switch written before going live, not after.
+- **Equity and the gate read the whole record; only the descriptive sections take a window.**
+  `tape stats --month` and `tape gate` must never disagree about the account, the drawdown, or
+  whether the gate is open. The null trader draws its magnitudes from the record's own wins and
+  losses, not their averages, and the bootstrap has its own random stream.
+- **What resets the gate is what changes the meaning of a trade**: the playbook text, the risk
+  limits, the cost model, the regime symbol, the call threshold, and the model or provider.
+  Never the watchlist, the lookbacks, or a key. A hand edit of `playbook.md` counts.
+- **A session is complete when the venue says so.** Grading uses the venue calendar's close for
+  that day (half days close at 13:00 ET); the fixed 15:55 ET is only the fallback.
+
+### The Retro Edits Text, Never Rules
+- A retro diff is an exact text edit (`add`, `edit`, `remove`) inside one named section; `before`
+  must appear exactly once in that section. It may not touch `## Risk rules` or anything nested
+  under it, may not introduce a level-1 or level-2 heading or a setext heading, and may not add a
+  `### <ID>` that already exists. The reply is archived even when its diffs are refused.
+- `retro apply` is atomic: the previous file goes to `playbook.history/`, the new file lands by
+  rename, and the version row plus every diff mark commit in one transaction. A diff applies once.
+- Everything the model reads from the record (theses, invalidations, pass reasons, headlines) is
+  fenced as data with markers it cannot close from inside; the playbook is the one trusted block,
+  which is why its edits go through a human.
+
 ### Paper Is Not Real, and the Code Says So
 - `tape init` sets the ledger to a fundable size ($5,000 default). Alpaca's $100k paper balance is
   labelled "ignored by stats" anywhere it is shown.

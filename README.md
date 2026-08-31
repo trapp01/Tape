@@ -16,14 +16,19 @@ itself, is worth more than one that claims to know where the market is going.** 
 no evidence behind it. The first produces the one thing a beginner cannot get any other way — an
 honest record.
 
-Phases 0, 1 and 2 ship today: config, the Alpaca paper adapter, the SQLite journal, the cost model,
-the provider-agnostic model layer, manual orders end to end, the morning briefing, and the co-pilot
-— `tape brief` reads the market, applies a playbook you wrote, files one falsifiable call that
-`tape score` grades against the session that followed, and puts zero to three trade ideas on a
-slate you take or pass one at a time. Every idea is sized in Go, checked against limits the model
-cannot argue with, and journaled whether or not you trade it. 676 tests, none of which touch the
-network. What is not built is the mirror: counterfactual scoring of the passes, `tape stats`, and
-the weekly retro.
+Phases 0 through 3 ship today: config, the Alpaca paper adapter, the SQLite journal, the cost model,
+the provider-agnostic model layer, manual orders end to end, the morning briefing, the co-pilot, and
+the mirror. `tape brief` reads the market, applies a playbook you wrote, files one falsifiable call
+and a bias on each watchlist symbol, and puts zero to three trade ideas on a slate you take or pass
+one at a time. `tape score` grades the call and the biases, and replays every decided idea against
+the minute bars of the session that followed — taken, passed, rejected, expired, unfilled alike.
+`tape stats` cuts the result by setup, by regime and by decision, and checks it against a gate that a
+zero-edge record has to fail. `tape retro` reads the scored record back and proposes exact edits to
+the playbook, which you apply one at a time. 886 tests, none of which touch the network.
+
+What is not done is the part that isn't code. Tape has never been run against a real Alpaca account,
+a real calendar API, or a real model. The next phase of this project is three or more months of real
+mornings on paper — not more features.
 
 Note: tape has no live-broker code path. `tape mode live` is refused, and no flag, environment
 variable, or config value changes that.
@@ -136,9 +141,7 @@ Two loops. The second one is why this is more than a chat wrapper.
 state, regime, what the calendar is about to do, and a falsifiable call of the day — then proposes
 zero to three trades, each tied to a named rule in the playbook and each carrying its stop, target
 and size before it carries anything else. You take or pass. Taken orders go to the broker.
-Everything goes into the journal. The briefing, the call and the proposals are built today, and the
-call is graded today; the counterfactual scoring of what you passed on and the weekly retro are
-Phase 3.
+Everything goes into the journal.
 
 **Learning.** Nightly, the journal is scored against what actually happened. Weekly, the model reads
 its own scored record and proposes diffs to `playbook.md`, which you review like a pull request.
@@ -287,9 +290,11 @@ fastest and they multiply every mistake. Crypto has thin qualitative information
 which fights a morning routine. Shorting is one more way to be wrong while learning. All of them fit
 behind the same interfaces later.
 
-**Not a backtester, yet.** `tape score` grades the call of the day against the session that
-followed, which is one claim a day and nothing else. Trade-level scoring with counterfactuals is
-Phase 3, a walk-forward backtest is the Python sidecar's job, and neither exists today.
+**Not a backtester.** The counterfactual replay under [The mirror](#the-mirror) only ever replays
+ideas the model actually filed, on the one session each was filed for, at the levels it wrote down.
+It cannot tell you what a rule would have done over the last five years, because there is no record
+of it having been applied then. A walk-forward backtest over historical bars is the Python sidecar's
+job, and that sidecar does not exist yet.
 
 **Not a data terminal.** Few providers, well-tested and replaceable, is the entire ambition — see
 the OpenBB influence above.
@@ -304,10 +309,12 @@ Run it in paper mode until you have enough entries in the journal to judge it. T
 reason the journal exists — a proposal you did not record is a proposal you cannot grade — and it is
 why real money sits behind a gate with the criteria fixed in advance.
 
-Read the source before you trade on anything it says. It is about 13,600 lines of Go, and the parts
+Read the source before you trade on anything it says. It is about 19,600 lines of Go, and the parts
 that decide whether the numbers mean anything are small enough to read in a sitting: `internal/costs`
-is 121 lines, `internal/risk` — all of the position sizing — is 156, and the guardrails in
-`internal/trading/rules.go` and `internal/trading/entry_rules.go` are 214 and 222.
+is 121 lines, `internal/risk` — all of the position sizing — is 156, the guardrails in
+`internal/trading/rules.go` and `internal/trading/entry_rules.go` are 214 and 222, the replay that
+grades every idea you passed on is 208 lines in `internal/counterfactual`, and the null trader and
+the bootstrap the gate leans on are 132 lines in `internal/stats/significance.go`.
 
 ## Install
 
@@ -369,14 +376,22 @@ tape brief                        # the read, one graded call, and 0-3 sized ide
 tape take 1                       # trade idea 1 as a bracket, at the size Go computed
 tape pass 2 --reason "gap already ran"
 tape eod                          # flatten, expire what you never decided, recap the day
-tape score                        # grade the call, after 16:30 ET
+tape score                        # grade the call and the biases, replay every idea, after 16:30 ET
+```
+
+Then once a week, when the sessions have piled up:
+
+```sh
+tape stats --month                # what the record says, and where it stands against the gate
+tape retro                        # the review, and the playbook edits it proposes
+tape retro apply 3 --diff 1       # write the ones you agree with
 ```
 
 `take` and `pass` are the whole decision surface: there is no auto-take flag, and a pass will not
 go through without a reason, because the pass side is what gets counterfactually scored later.
 `tape why 1` prints everything behind an idea, sizing arithmetic included, before you commit to it.
 
-`eod` grades the call itself when you run it late enough, so `tape score` is for the days you
+`eod` runs the scoring pass itself when you run it late enough, so `tape score` is for the days you
 closed out early. The manual orders are still there when you want them:
 
 ```sh
@@ -443,6 +458,9 @@ Recap 2026-08-30
   costs on closed trades  $2.03
   costs on today's fills  $2.03
   net                     +$96.92
+
+Call
+  call grades after 16:30 ET; run `tape score` later.
 
 flat.
 ```
@@ -518,8 +536,9 @@ lands in the playbook, because a playbook that long is yours to shorten and the 
 run.
 
 **What it must return** is JSON against a strict schema: a market read, a regime note, a calendar
-note, at most twelve watchlist notes each carrying a bias of bullish, bearish or neutral, at most
-five risks, at most three trade proposals, and one call of the day. The call is an instrument, a
+note, at most twelve watchlist notes each carrying a bias of bullish, bearish or neutral — every one
+of which is graded after the close, exactly like the call — at most five risks, at most three trade
+proposals, and one call of the day. The call is an instrument, a
 direction of up, down or flat, a threshold in percent — or null to take the desk's configured
 default — a rationale that names the playbook rule it rests on, and an invalidation: the one
 observation that would prove it wrong before the close. `threshold_pct` is nullable on purpose. A
@@ -745,7 +764,9 @@ on.
 **`eod` closes the record as well as the positions.** It expires every idea nobody decided — an
 undecided proposal is not one you can take tomorrow, it is one the session ran out on — and, once
 the venue has been cancelled and flattened, it marks any take whose order died without trading a
-share as `unfilled`. That one was never a trade, and Phase 3 must not score it as one.
+share as `unfilled`. That one was never a trade, so the stats never count it as one — its levels
+still replay, but it contributes nothing to execution drag, because there is no fill to compare
+against. Then, if the session is behind us, `eod` runs the scoring pass itself.
 
 ### The guardrails
 
@@ -781,6 +802,318 @@ losing read — so neither ends the day.
 bracket legs resting over its own shares cancels those legs first and says so. A rule that traps you
 in a position is worse than the one it enforces. Selling more than the ledger holds is still a
 short, and still refused.
+
+## The mirror
+
+A record you never grade is a diary. Three commands turn it into evidence: `tape score` settles what
+the sessions have answered, `tape stats` says what the settled record adds up to, and `tape retro`
+reads that back and proposes changes to the playbook. None of them can be re-run into a nicer
+number — every grade is written once, and the journal refuses a second one.
+
+### What gets graded
+
+`tape score` runs after the close; `tape eod` calls it for you when you run it late enough. It
+settles three things for every session on or before the day it is asked about.
+
+**The call of the day**, from its own session's first and last regular minute bars.
+
+**Every watchlist bias.** Up to twelve a morning, each graded against its own symbol's session at
+the threshold that morning's call was filed under — or the desk's `call_threshold_pct` when the
+briefing filed no call, so a note and the call it sat beside are settled by the same size of move.
+Bullish has to clear the threshold, bearish has to clear it downward, neutral has to stay inside it.
+One call a day is a sample of one; twelve notes a day is the only way the model's read reaches a
+sample size in under a decade. A symbol nobody can grade is named and left out — it does not cost
+the session its other eleven — and one symbol carries one grade per session, however many briefings
+that session archived.
+
+**A counterfactual replay of every decided idea.** Taken, passed, rejected, expired and unfilled all
+replay the same way, against the minute bars of the session the idea was written for, at the levels
+the model wrote down. That symmetry is the entire point: a pass and a take that are scored by
+different machinery cannot be compared, and comparing them is the question the whole journal exists
+to answer.
+
+```console
+$ tape score
+
+[paper] score
+
+Calls through 2026-08-28
+  2026-08-28  SPY  up ≥0.3%  actual +0.50%  ✓
+
+Replays through 2026-08-28
+  2026-08-28  #1 NVDA  M2  passed    target  +$53.31  +2.39R
+  2026-08-28  #2 AMZN  M1  taken     target  +$81.65  +3.61R
+  2026-08-28  #3 AAPL  R1  rejected  target  $0.00  +1.67R
+
+Notes through 2026-08-28
+  2026-08-28  NVDA  bullish  actual +0.50%  ✓
+
+last 30 days: 1/1 (100%)
+1 calls graded in all; this needs 3+ months to mean anything.
+```
+
+That block, and every other one in this section, is real output rendered against the in-memory venue
+and the fake model the test suite uses — see [Status](#status). `#3 AAPL` shows why the R column and
+the dollar column are separate: it was the idea the reward/risk rule rejected before it was ever
+sized, so it replays at zero shares. The levels still score, the dollars are zero, and the record can
+still tell you later whether the rule that refused it was refusing good trades.
+
+### The replay rules, and which of them are conventions
+
+A minute bar is a summary. It says the high and the low that minute printed and not the order they
+printed in, so a replay has to decide some things a bar cannot. Tape decides them the same way every
+time, writes down which replays needed deciding, and reports the count next to the numbers it shapes.
+
+- **The entry fills on touch.** A long limit fills on the first bar whose low reaches the entry. It
+  pays `min(entry, bar open)`, so a bar that gapped underneath the limit fills at the open rather
+  than at a price nobody was offering. **Fill-on-touch is the optimistic convention here** — a real
+  resting limit is behind a queue and may not fill on a low that only kisses it. It is written down
+  rather than hidden.
+- **The fill bar can stop you out but cannot reach the target.** Within the minute you filled, the
+  stop was live from the moment of entry and the take-profit was not resting yet when that minute's
+  high printed.
+- **A bar that spans both the stop and the target is a stop.** One minute cannot say which level
+  came first, so the conservative reading wins and the outcome is marked `Ambiguous`. `tape stats`
+  reports the count as `decided by the stop-first rule`, and any replay it decided prints as
+  `stop (stop-first)` rather than a bare `stop`.
+- **A stop gapped through fills at the open**, `min(stop, bar open)`, not at the level nobody offered.
+- **Anything still open at the last bar exits at the close.** No overnight, matching the flat-by-close
+  rule the live path enforces.
+- **Both sides pay the cost model.** Commission, regulatory fees and slippage land on the replayed
+  entry and the replayed exit, so a replay's net is comparable with what the journal books for the
+  same round trip rather than flattering it.
+- **Size is what you would actually have held** — the sized quantity, or the smaller number a
+  `take --qty` sent. The R multiple is per share, so an idea nobody could size still scores its levels.
+- **The bars are sorted before they are walked.** Oldest first, stably, so the path is the replay's to
+  establish and not the feed's to promise.
+- **A replay that cannot be trusted is refused, not filed.** Levels that do not describe a long trade,
+  a session with no prints, and a fill bar whose open sits more than 25% from the proposed entry — the
+  signature of a split the feed has since adjusted for — are all reported and left for a later run.
+
+**Only complete sessions are graded, and a half day is a complete session.** When the broker adapter
+can answer for the venue's own calendar, a session counts as finished once its last print reaches
+within five minutes of that day's actual close, so a 13:00 ET early close grades like any other day.
+The fixed 15:55 ET floor is only the fallback for an adapter that cannot say.
+
+### What `tape stats` shows
+
+Nine sections, computed from the journal and nothing else:
+
+```console
+$ tape stats --all
+
+[paper] stats
+
+the whole record, through 2026-08-28 · 1 session(s) · paper
+
+TRADES
+  nothing closed in this window.
+
+EQUITY (the whole record; a window never moves the account)
+  start         $5,000.00
+  end           $5,000.00
+  return        +0.00%
+  max drawdown  $0.00 (0.0%)
+  this window   $0.00 (+0.00%)
+
+BY SETUP
+  SETUP  TRADES  WIN  EXPECTANCY  NET    REPLAYS     REPLAY NET
+  M1     0       -    $0.00       $0.00  1/1 filled  +$81.65
+  M2     0       -    $0.00       $0.00  1/1 filled  +$53.31
+  R1     0       -    $0.00       $0.00  1/1 filled  $0.00
+
+BY REGIME
+  REGIME            SESSIONS  CALLS  NOTES  TRADES  NET
+  uptrend, low vol  1         1/1    1/1    0       $0.00
+
+CALLS / NOTES
+  KIND   GRADED  CORRECT   PENDING  INSIDE NOISE BAND
+  calls  1       1 (100%)  0        0
+  notes  1       1 (100%)  0        0
+  2 reads graded here; this needs 3+ months to mean anything.
+
+PROPOSALS
+  status                           proposed 0 · taken 0 · passed 1 · rejected 1 · expired 0 · unfilled 1
+  passes that would have profited  1 ($53.31 left on the table)
+  losses the vetoes avoided        $0.00
+  execution drag on takes          $0.00
+  replays                          3 replayed · 3 filled (2 win / 0 loss) · net +$134.96 · avg 2.56R
+  decided by the stop-first rule   0
+
+REFUSALS
+  no guardrail had to say no.
+
+SIGNIFICANCE
+  too few trades to build a zero-edge trader from.
+
+GATE
+  reading from 2026-08-31
+  playbook version #1 (first snapshot) was recorded that day; the gate reads only what came after it, so a rule fitted to the record is never graded on the record that produced it.
+  CHECK                   ACTUAL                                NEEDED
+  months covered          0.0 mo since 2026-08-31               3 mo                ✗
+  sessions                0 since 2026-08-31                    50+                 ✗
+  trades                  0 since 2026-08-31                    100+                ✗
+  expectancy              $0.00/trade since 2026-08-31          > $0.00             ✗
+  expectancy lower bound  insufficient trades since 2026-08-31  > $0.00             ✗
+  profit factor           0.00 since 2026-08-31                 >= 1.30             ✗
+  max drawdown            0.0% since 2026-08-31                 <= 10.0%            ✓
+  null pass rate          insufficient trades since 2026-08-31  <= 10.0%            ✗
+  refusals last month     0 since 2026-08-31                    <= 0                ✓
+  setups identified       0 since 2026-08-31                    1+ (10 trades, +E)  ✗
+
+the gate is shut. tape trades paper until every line above reads ✓.
+```
+
+Four of those readouts answer questions you cannot get from a broker statement:
+
+**By setup** puts each playbook rule's real trades next to the replay of every idea that cited it,
+taken or not. A rule can be net positive on the two trades you happened to take and net negative
+across all thirteen it proposed; the second column is the one that says whether the rule works,
+because the first is filtered by your own decisions.
+
+**By regime** cuts the same record by the market label the briefing archived that morning — the only
+regime reading the archive can still prove, since it was computed in Go from daily bars before the
+model saw it. Days that ran with no archived briefing get their own row rather than being absorbed
+into somebody else's.
+
+**Veto quality** is the `passes that would have profited` and `losses the vetoes avoided` pair.
+Between them they are the answer to the question in [Why I built it](#why-i-built-it) that started
+this whole thing: when you decline a suggestion, are you saving yourself money or costing yourself
+money?
+
+**Execution drag** is the replay's net minus what a take actually booked, summed. The replay fills at
+the level; you filled where the venue filled you, at the moment you typed the command. The gap is
+what your execution costs, separated from whether the idea was any good — and it is only counted
+where the order actually traded, because a take that never filled has nothing to compare against.
+That is why the idea `tape score` printed as `taken` shows up under `unfilled` above: by the time
+`eod` ran, its limit had never traded a share. Its levels still replayed; its drag is not a number.
+
+`INSIDE NOISE BAND` counts the reads whose actual move landed within 5 basis points of the threshold
+they were graded against. Those were decided inside the feed's own measurement error rather than by
+the read, and they are printed beside the accuracy they inflate.
+
+**A window scopes the description, never the account.** `--month`, `--all` and `--from`/`--to` cut
+the trades, the setups, the regimes, the reads, the proposals and the refusals. `EQUITY` and `GATE`
+always read the whole record through the window's end, so `tape stats --month` and `tape gate` can
+never disagree about the account, the drawdown, or whether the gate is open. The only window-shaped
+line in `EQUITY` is `this window`, and it says so.
+
+`tape gate` is the last two sections on their own, over the whole record. `tape stats --json` prints
+the entire report for the sidecar.
+
+### Why the gate is harder than the numbers look
+
+A profit factor of 1.3 over fifty trades is not evidence of anything. A trader with no edge at all —
+winning exactly as often as their own win and loss sizes require to break even, and no more — clears
+it often enough that the threshold on its own is decoration. So `tape stats` builds that trader and
+runs him: ten thousand records at your own sample size, each trade winning at that break-even rate, each
+trade's size drawn from your own wins and your own losses — so a profit factor resting on one
+outlier is tested against a null that can draw that outlier too. A path that breaches the drawdown
+ceiling dies where it breached it. The gate requires that at most `max_null_pass_rate` of those
+paths clear the thresholds you did. Beside it sits a bootstrap: ten thousand resamples of your net
+P&L with replacement, of which the 2.5th percentile of the resampled means has to be above zero —
+the low end of a 95% interval on expectancy, not the point estimate. Both stay silent under twenty
+trades or fewer than five on either side, and the gate wants a hundred trades before it will pass
+that line at all. And the gate reads only the sessions after the most recent playbook or rule
+change, because the retro fits the playbook to the record and a rule fitted to a record must not
+then be graded on the record that produced it. That is in-sample optimisation, and it is the exact
+failure [FINSABER](https://arxiv.org/abs/2505.07078) found when it re-ran LLM timing strategies with
+data-snooping controls: an edge that survives only until somebody controls for the fitting. Every
+one of these makes the gate slower to open, and slower is the correct direction.
+
+**What resets that window is what changes the meaning of a trade**: the playbook text, the risk
+limits, the cost model, the regime symbol, the call threshold, and the model or the provider. Never
+the watchlist, the news lookback, or a key — a symbol you added changes what the model looks at, not
+what a trade means. A hand edit of `playbook.md` counts exactly like an edit a review applied, because
+the file is fingerprinted, not trusted. Every snapshot is a row:
+
+```console
+$ tape playbook versions
+
+[paper] playbook versions
+
+ID  TAKEN        SHA           REVIEW  NOTE
+#1  08-31 08:46  2a1bc5e31c80  -       first snapshot
+```
+
+The snapshot is taken by `stats`, `gate` and `retro` when they read the record, not by the listing,
+so the row is written the moment the change is first observed rather than the moment you look.
+
+### The weekly review
+
+`tape retro` is one model call a week. It reads the last `[retro] weeks` of sessions, or `--weeks N`:
+the stats report for that window, the whole-record gate table with its significance test, the three
+best and worst trades by name, every pass with the replay of what it cost or saved, the guardrail
+refusals by rule, the previous review's own summary, the risk limits, the setup ids the playbook
+defines, and `playbook.md` verbatim as the last block. Everything in there that somebody else wrote
+— your pass reasons, the earlier review's summary — is fenced as untrusted data with markers it
+cannot close from inside. The playbook is the one trusted block in the message, which is exactly why
+its edits go through you.
+
+```console
+$ tape retro
+
+[paper] retro
+
+review #1 · 2026-08-22 → 2026-08-28 · fake-model-1 (fake) · 41.2k in / 1.1k out
+
+SUMMARY
+  One trade and one call is not a sample; the only defensible change is a note, not a
+  rule.
+
+FINDINGS
+  1. M1 is the only rule that traded  (low confidence)
+     1 trade, 1 replay, +$0 expectancy
+  2. Every veto so far was on an extended open  (low confidence)
+     1 pass, replayed to its target
+
+PLAYBOOK DIFFS
+  1. add under ## Setups
+     why: The record shows no second continuation rule.
+     + ### M3 midday continuation - When: the noon high breaks on rising volume. -
+     + Invalidation: a close back under the noon high.
+  2. add under ## Posture by regime
+     why: The week's only regime was uptrend, low vol.
+     + **Note.** Every session in the record so far has been uptrend, low vol.
+act: tape retro apply 1 --diff 1 · --all
+```
+
+**A diff is an exact text edit, not a description of one.** It names a heading that already exists in
+the playbook and one of three changes: `add` appends text under that section, `edit` replaces a
+quoted `before` with an `after`, `remove` deletes the `before`. For an edit or a remove the `before`
+has to appear *exactly once* under the named section — zero matches and it is refused, two matches
+and it is refused, because a diff that could land in two places is a diff nobody chose.
+
+**What a diff may never touch.** Not `## Risk rules`, and not anything nested under it: those numbers
+are enforced in Go, the model is shown them only so that what it writes plans inside them, and a diff
+naming that section is rejected unread. New text may not open a section of its own — no level-1 or
+level-2 heading, and no setext underline, which renders as one. A new `### <ID> title` has to carry a
+real setup id and one the playbook does not already define, because an id names one rule. At most
+eight findings and five diffs, every finding carrying the numbers behind it and its own confidence,
+every diff carrying a rationale.
+
+**An empty diff list is frequently the right answer**, and the prompt says so in as many words. A
+dozen trades cannot separate a rule from a coin flip and a week of calls cannot either; a review that
+says the sample is too small and proposes nothing has done its job. The section renders as
+`none. an empty list is a real answer: the record could not carry a change.`
+
+**`tape retro apply` is the only thing that edits a rule**, and it edits nothing you did not name:
+`--diff 1,3` or `--all`, never by default. Each chosen diff is resolved against the playbook *as it
+stands now*, not as it stood when the review was written, so a file you have since edited by hand
+either still matches or the apply refuses — and that hand edit gets its own snapshot first, so the
+two changes are two versions rather than one. Then it is atomic in the ways that matter: the new
+file is staged beside the old one and moved into place by rename, so no reader ever sees half a
+strategy file; the file it replaced is kept in `playbook.history/`, named for the moment it stopped
+being in force; and the version row plus the mark on every applied diff commit in one transaction,
+before the file moves, so a crash can never leave edits that nothing records as landed. A diff
+applies once — a second `apply` of the same one is refused. The command prints `applied 1 edit(s)`,
+the `previous playbook` path, the new `version`, and the line that matters: `the gate now reads only`
+the sessions from here on.
+
+`tape retro --dry-run` prints both prompts, character counts and all, and asks nothing.
+`tape retro show <id|latest>` re-renders an archived review, and `--json` gives the sidecar the
+input, the reply and the diffs. A reply that fails validation is archived verbatim and reported as
+failed — never rendered as if it had passed.
 
 ## Configuration
 
@@ -837,6 +1170,20 @@ max_daily_losses = 2      # positions closed at a gross loss before the day is o
 no_entries_before_close_minutes = 30   # no new entries this close to the bell
 min_reward_risk = 1.5     # smallest target, in multiples of the stop distance. At least 1
 max_entry_deviation_pct = 5.0          # how far a proposed entry may sit from the last price
+
+[retro]                   # the weekly review
+weeks = 1                 # how many weeks of sessions a review reads by default. At least 1
+model = ''                # overrides [llm] model for the review only; blank runs the same model
+
+[gate]                    # the real-money threshold. Reading it unlocks nothing
+min_months = 3            # calendar months the gate window has to span. At least 1
+min_sessions = 50         # sessions inside that window. At least 1
+min_trades = 100          # closed trades. At least 30; below that, edge and noise look identical
+min_profit_factor = 1.3   # gross profit over gross loss. At least 1
+max_drawdown_pct = 10.0   # deepest fall from a peak, over the whole record. Within (0, 50]
+min_expectancy_usd = 0.0  # net per trade has to come out above this
+max_refusals_last_month = 0            # guardrail breaches allowed in the final 30 days
+max_null_pass_rate = 0.1  # how often a zero-edge trader may clear the thresholds. Within (0, 0.5]
 ```
 
 The SEC fee and the FINRA TAF are not in the file. They are not yours to choose, so they live in
@@ -864,6 +1211,19 @@ The `[risk]` walls will not go to zero either. `per_trade_pct` has to sit inside
 `max_entry_deviation_pct` above zero. The gate is measured *inside* these walls, so a wall widened
 to nothing flatters every stat it feeds. `require_stop` is the one you can turn off, and turning it
 off is a decision to trade without a bounded loss.
+
+`[gate]` has a floor of its own, for the same reason: the numbers were written down before any
+results existed and they are not supposed to soften afterwards. `min_profit_factor` will not go
+under 1, `max_drawdown_pct` has to sit inside `(0, 50]`, `min_trades` refuses anything under 30
+because fewer trades cannot separate edge from noise, and `max_null_pass_rate` has to sit inside
+`(0, 0.5]` — a gate a coin flip passes half the time is not a gate. You can make every one of them
+*harder* than the default.
+
+Raising the bar is free: `[gate]` is not part of the fingerprint that restarts the gate's window,
+because moving the pass mark does not change what a trade meant. Moving a *wall* is not free.
+`[risk]`, `[costs]`, `brief.regime_symbol`, `brief.call_threshold_pct` and the model are all in that
+fingerprint, so tightening one costs you the record traded under the old one. That is the trade, and
+it is the honest way round.
 
 Setting `slippage_bps = 0` and `commission_min = 0` will make paper look better. It will also make
 every number tape produces a lie, which is the one thing this repo is built not to do.
@@ -917,7 +1277,6 @@ tape brief               the morning read, one falsifiable call, and 0-3 sized i
                          --dry-run, --json, --force
 tape briefs              archived briefings, newest first, with --limit
 tape briefs show ID      re-render one from the journal; ID or "today"
-tape score               grade the calls the sessions have answered, with --through
 tape watchlist ls        the symbols the briefing reads
 tape watchlist add SYM   add symbols to the watchlist
 tape watchlist rm SYM    remove symbols from the watchlist
@@ -928,13 +1287,25 @@ tape take N              trade idea N as a bracket at the computed size; --qty l
 tape pass N              decline idea N; --reason is required
 tape why N               levels, thesis, invalidation, status, and the sizing arithmetic
 
+tape score               grade the calls and the watchlist biases, replay every decided idea
+                         --through picks the last session to settle
+tape stats               the whole report: trades, equity, setups, regimes, reads, vetoes,
+                         refusals, significance, the gate
+                         --month, --all, --from/--to, --json
+tape gate                the significance test and the gate table, over the whole record; --json
+tape retro               the weekly review: what the record shows, and exact playbook diffs
+                         --weeks, --dry-run, --json
+tape retro show ID       re-render an archived review; ID or "latest"
+tape retro apply ID      write the edits you name; --diff 1,3 or --all
+tape playbook versions   the snapshots the gate reads from, newest first; --limit
+
 tape buy SYM QTY         buy, with --stop (required), --limit, --target, --note
 tape sell SYM QTY        sell shares the ledger holds, with --limit and --note
 tape cancel ID...        cancel resting orders; --all cancels everything working
 tape pos                 open positions from the journal, priced live
 tape orders              journaled orders, with --open and --since
 tape watch SYM...        stream live quotes until Ctrl-C
-tape eod                 flatten, expire the undecided ideas, recap the day, grade the call
+tape eod                 flatten, expire the undecided ideas, recap the day, then run `score`
 
 tape mode [paper]        show or set the mode; `live` is refused
 tape llm ping            check the configured provider answers
@@ -942,8 +1313,10 @@ tape llm providers       list the known providers
 tape version             version, platform, and Go toolchain
 ```
 
-`briefs`, `briefs show`, `proposals`, `why`, `pass`, `watchlist` and `playbook` read the config and
-the journal and nothing else, so they work on a machine with no keys on it at all:
+`briefs`, `briefs show`, `proposals`, `why`, `pass`, `watchlist`, `playbook`, `playbook versions`,
+`stats`, `gate`, `retro show` and `retro apply` read the config and the journal and nothing else, so
+they work on a machine with no keys on it at all. Reading the record is not supposed to cost you an
+API call:
 
 ```console
 $ tape briefs
@@ -957,6 +1330,11 @@ $ tape proposals
 [paper] proposals
 
 no proposals for 2026-08-30; run `tape brief`.
+
+$ tape retro show latest
+
+[paper] retro show latest
+tape: no reviews archived yet; run `tape retro`
 ```
 
 A pass is scored later, so it has to say why, and the refusal comes before anything else happens:
@@ -1008,22 +1386,37 @@ lifecycle in the journal, and the rest of the Go-enforced guardrails: per-trade 
 positions, no averaging down, flat by close, stale entries, and a halt once two positions have
 closed the day at a gross loss. Done.
 
-**Phase 3 — the mirror.** Nightly scoring including counterfactuals, `tape stats`, weekly
-`tape retro` with playbook diffs. Then the actual experiment: three or more months of real mornings
-on paper. Next.
+**Phase 3 — the mirror.** The counterfactual replay of every decided idea, graded watchlist biases,
+`tape stats` with its by-setup, by-regime, veto and execution-drag cuts, the null-trader and
+bootstrap tests behind the gate, the playbook-version window the gate reads from, and `tape retro`
+with reviewed playbook diffs and an atomic apply. Done.
 
-**The gate.** No real money moves until every box ticks, and the boxes are written down now so they
-cannot be softened later:
+**Next, and it is not code.** Three or more months of real mornings on paper, through the full
+system, with a real model and real market data. Nothing in this repository has met either yet, so
+the first thing owed is a smoke run against a real Alpaca paper account and a real provider — one
+morning, end to end, watching what breaks. After that it is a routine, not a feature: run it, decide,
+score it, review it weekly, and let the record say what it says.
 
-- Three or more months and fifty or more sessions through the full system
-- Positive expectancy after modeled slippage and commissions
+**The gate.** No real money moves until every box ticks, and the boxes were written down before any
+results existed so that they cannot be softened afterwards. `tape gate` prints them:
+
+- Three or more months and fifty or more sessions, measured from the last rule change
+- One hundred or more closed trades
+- Positive expectancy after modeled slippage and commissions, and a bootstrap 95% lower bound on
+  that expectancy which is also above zero
 - Profit factor of 1.3 or better, maximum drawdown of 10% or less
+- A zero-edge trader with the same trade sizes and the same sample size clears those thresholds in
+  at most 10% of ten thousand simulated runs
 - Zero guardrail breaches in the final month
-- The stats identify *which* playbook rules carry the edge. Funding a mystery is gambling.
+- At least one playbook rule with ten or more trades and positive expectancy. Funding a mystery is
+  gambling.
 
-**Phase 4 — real money**, only if the gate opens. A live adapter behind the existing interface, a
-small account, the same guardrails and the same journal. Live results will be worse than paper; the
-gate's margins exist partly to absorb that, and the gate can close again.
+**Phase 4 — real money**, only if the gate opens *and* a kill switch is written before the first live
+order, not after the first bad week. A live adapter behind the existing interface, a small account,
+the same guardrails and the same journal. The gate validates the strategy; it cannot validate the
+trader, because paper money cannot reproduce what a real loss does to the person holding it. Live
+results will be worse than paper, the gate's margins exist partly to absorb that, and the gate can
+close again.
 
 If the gate never opens, phase four never runs, and the project still did its job. The full
 reasoning, the evidence behind each decision, and what I cut are in
@@ -1044,21 +1437,26 @@ archive; `tape briefs`, `tape score`, `tape watchlist` and `tape playbook`.
 So is Phase 2: the proposal half of the schema and its validation, `internal/risk` and the sizing
 that goes with it, the slate lifecycle in the journal, the eleven guardrails and the `refusals`
 table they write to, and `tape proposals`, `tape take`, `tape pass`, `tape why` and `tape cancel`
-around them. Twenty-one commands. 676 tests, none of which touch the network: venues, calendars and
-model endpoints are `httptest` servers asserting request shape, the briefing and the slate run
-against an in-memory feed and a fake model, trading runs against an in-memory fake broker, and the
-journal uses a temp-file SQLite.
+around them.
+
+And so is Phase 3, the mirror: `internal/counterfactual` replaying every decided idea against its
+own session's minute bars, watchlist biases graded like the call, `internal/stats` computing the
+whole report and the ten gate checks, the null-trader simulation and the expectancy bootstrap in
+`significance.go`, the `playbook_versions` window that stops the gate grading a fitted rule on the
+record that fitted it, and `internal/retro` with its second prompt, its diff constraints, and an
+apply that stages, snapshots and commits in one piece. Twenty-four commands. 886 tests, none of
+which touch the network: venues, calendars and model endpoints are `httptest` servers asserting
+request shape, the briefing, the slate and the review run against an in-memory feed and a fake
+model, trading runs against an in-memory fake broker, and the journal uses a temp-file SQLite. The
+schema is at version 6.
 
 Not done, and this is the important part: **tape has never been run against a real Alpaca account, a
 real calendar API, or a real model.** Every adapter is tested against a fake HTTP server and nothing
-more, and no briefing or proposal in this repository was written by an actual model — the ones
-further up are test fixtures, and they say so. What a real model does with a real morning's
-headlines, whether its ideas are worth taking, and whether its calls beat a coin over three months,
-is exactly the thing nobody here knows yet.
-
-There is no counterfactual scoring, no `tape stats`, and no weekly retro, so the pass side is
-recorded and not yet graded — which is the half that makes the record worth keeping. The journal
-schema will change before those land; it is at version 4 today.
+more, and no briefing, proposal or review in this repository was written by an actual model — the
+ones further up are test fixtures, and they say so. What a real model does with a real morning's
+headlines, whether its ideas are worth taking, whether your vetoes help or hurt, and whether any of
+it beats a coin over three months, is exactly the thing nobody here knows yet. Every mechanism for
+finding out now exists; none of the answers do.
 
 I'm open-sourcing it at this stage because the interesting part is not the trading. It is that the
 honest version of this tool — cost-modeled fills, a ledger that ignores the broker, limits in

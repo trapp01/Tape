@@ -72,6 +72,33 @@ func (f *briefFeed) Session(_ context.Context, symbol, day string) (market.Sessi
 	}, nil
 }
 
+// SessionBars is a rising intraday path for every symbol the feed quotes: the
+// first minute dips under a proposed entry and the session runs to the target,
+// so a replay has a whole round trip to price.
+func (f *briefFeed) SessionBars(_ context.Context, symbol, day string) ([]market.Bar, error) {
+	snap, ok := f.snaps[symbol]
+	if !ok {
+		return nil, nil
+	}
+	open, err := time.ParseInLocation(market.DayLayout, day, market.Eastern())
+	if err != nil {
+		return nil, err
+	}
+	open = open.Add(9*time.Hour + 30*time.Minute)
+
+	const minutes = 30
+	from, to := snap.Last*0.996, snap.Last*1.03
+	bars := make([]market.Bar, 0, minutes)
+	for i := range minutes {
+		price := from + (to-from)*float64(i)/float64(minutes-1)
+		bars = append(bars, market.Bar{
+			Time: open.Add(time.Duration(i) * time.Minute),
+			Open: price, High: price + 0.3, Low: price - 0.3, Close: price,
+		})
+	}
+	return bars, nil
+}
+
 func (f *briefFeed) Snapshots(_ context.Context, symbols []string) (map[string]market.Snapshot, error) {
 	out := make(map[string]market.Snapshot, len(symbols))
 	for _, s := range symbols {

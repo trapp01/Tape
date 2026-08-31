@@ -10,6 +10,10 @@ import (
 // number, like M1 or R2. Anything else is a plain heading, not a setup.
 var setupID = regexp.MustCompile(`^[A-Z][0-9]+$`)
 
+// IsSetupID reports whether s is shaped like a setup id: one uppercase letter
+// and a number, the form a heading has to open with to define a rule.
+func IsSetupID(s string) bool { return setupID.MatchString(s) }
+
 // SetupIDs lists the ids a proposal may cite, in the order the playbook defines
 // them. An id is the first word of a "### " heading; a repeat is ignored.
 func SetupIDs(text string) []string {

@@ -195,6 +195,26 @@ func TestMatchFIFOSortsUnorderedFillsWithoutMutating(t *testing.T) {
 	}
 }
 
+func TestMatchFIFOCarriesEntryAndExitOrderIDs(t *testing.T) {
+	// fill() uses the fill id as the order id, so the trade should name order 1
+	// for the oldest lot and order 3 for the sell that closed it.
+	trades, _ := matchFIFO([]Fill{
+		fill(1, "AAPL", "buy", 10, 100, 0),
+		fill(2, "AAPL", "buy", 10, 120, 1),
+		fill(3, "AAPL", "sell", 15, 130, 2),
+	})
+
+	if len(trades) != 1 {
+		t.Fatalf("got %d trades, want 1", len(trades))
+	}
+	if trades[0].EntryOrderID != 1 {
+		t.Errorf("EntryOrderID = %d, want 1 (the oldest lot consumed)", trades[0].EntryOrderID)
+	}
+	if trades[0].ExitOrderID != 3 {
+		t.Errorf("ExitOrderID = %d, want 3 (the closing fill)", trades[0].ExitOrderID)
+	}
+}
+
 func TestMatchFIFOEmpty(t *testing.T) {
 	trades, open := matchFIFO(nil)
 	if len(trades) != 0 || len(open) != 0 {

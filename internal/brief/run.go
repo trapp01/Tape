@@ -46,7 +46,10 @@ func Run(ctx context.Context, d Deps, p llm.Provider) (Result, error) {
 	if d.Journal == nil {
 		return Result{}, errors.New("brief: no journal configured")
 	}
-	v := d.session(ctx)
+	v, err := d.session(ctx)
+	if err != nil {
+		return Result{}, err
+	}
 
 	if !d.Force {
 		res, found, err := reuse(ctx, d, v.day)

@@ -182,3 +182,21 @@ func intPtr(n sql.NullInt64) *int64 {
 	v := n.Int64
 	return &v
 }
+
+func nullTime(p *time.Time) any {
+	if p == nil {
+		return nil
+	}
+	return formatTime(*p)
+}
+
+func timePtr(n sql.NullString) (*time.Time, error) {
+	if !n.Valid {
+		return nil, nil
+	}
+	t, err := parseTime(n.String)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}

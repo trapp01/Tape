@@ -26,6 +26,8 @@ type fakeFeed struct {
 	// sessions is keyed by sessionKey; asked holds every key Session was called with.
 	sessions map[string]market.Session
 	asked    []string
+	// minutes is one session's intraday bars, keyed by sessionKey.
+	minutes map[string][]market.Bar
 
 	snapErr    error
 	barErr     error
@@ -68,6 +70,13 @@ func (f *fakeFeed) Session(_ context.Context, symbol, day string) (market.Sessio
 		return market.Session{}, fmt.Errorf("no prints for %s on %s", symbol, day)
 	}
 	return s, nil
+}
+
+func (f *fakeFeed) SessionBars(_ context.Context, symbol, day string) ([]market.Bar, error) {
+	if f.sessionErr != nil {
+		return nil, f.sessionErr
+	}
+	return f.minutes[sessionKey(symbol, day)], nil
 }
 
 func sessionKey(symbol, day string) string { return symbol + " " + day }

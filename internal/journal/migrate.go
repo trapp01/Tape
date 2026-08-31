@@ -15,6 +15,8 @@ var migrations = [][]string{
 	schemaV2,
 	schemaV3,
 	schemaV4,
+	schemaV5,
+	schemaV6,
 }
 
 // schemaV1 is the order and fill record every stat is derived from.
@@ -160,6 +162,104 @@ var schemaV4 = []string{
 	`ALTER TABLE proposals ADD COLUMN taken_risk_usd REAL`,
 	`ALTER TABLE orders ADD COLUMN parent_order_id TEXT NOT NULL DEFAULT ''`,
 	`CREATE INDEX orders_parent ON orders(parent_order_id) WHERE parent_order_id <> ''`,
+}
+
+// schemaV5 is the mirror: what every proposal would have done at its own levels,
+// the weekly review that reads those outcomes, and the playbook snapshot taken
+// each time a review's diff is applied.
+var schemaV5 = []string{
+	`CREATE TABLE proposal_outcomes (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		proposal_id INTEGER NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
+		mode        TEXT    NOT NULL,
+		day         TEXT    NOT NULL,
+		filled      INTEGER NOT NULL DEFAULT 0,
+		fill_price  REAL,
+		filled_at   TEXT,
+		exit_kind   TEXT    NOT NULL DEFAULT '',
+		exit_price  REAL,
+		exit_at     TEXT,
+		qty         INTEGER NOT NULL DEFAULT 0,
+		gross_pl    REAL    NOT NULL DEFAULT 0,
+		costs       REAL    NOT NULL DEFAULT 0,
+		net_pl      REAL    NOT NULL DEFAULT 0,
+		r_multiple  REAL    NOT NULL DEFAULT 0,
+		ambiguous   INTEGER NOT NULL DEFAULT 0,
+		scored_at   TEXT    NOT NULL
+	)`,
+	// An idea is replayed once, so the counterfactual cannot be re-run into a
+	// number the reader prefers.
+	`CREATE UNIQUE INDEX proposal_outcomes_proposal ON proposal_outcomes(proposal_id)`,
+	`CREATE INDEX proposal_outcomes_mode_day ON proposal_outcomes(mode, day)`,
+	`CREATE TABLE retros (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		mode          TEXT    NOT NULL,
+		generated_at  TEXT    NOT NULL,
+		from_day      TEXT    NOT NULL,
+		to_day        TEXT    NOT NULL,
+		provider      TEXT    NOT NULL DEFAULT '',
+		model         TEXT    NOT NULL DEFAULT '',
+		input_json    BLOB    NOT NULL,
+		output_json   BLOB    NOT NULL,
+		input_tokens  INTEGER NOT NULL DEFAULT 0,
+		output_tokens INTEGER NOT NULL DEFAULT 0,
+		cost_usd      REAL,
+		latency_ms    INTEGER NOT NULL DEFAULT 0
+	)`,
+	`CREATE INDEX retros_mode_generated ON retros(mode, generated_at)`,
+	`CREATE TABLE playbook_versions (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		created_at  TEXT    NOT NULL,
+		sha256      TEXT    NOT NULL,
+		path        TEXT    NOT NULL DEFAULT '',
+		retro_id    INTEGER REFERENCES retros(id),
+		note        TEXT    NOT NULL DEFAULT '',
+		config_hash TEXT    NOT NULL DEFAULT ''
+	)`,
+	// The hash is how a stat finds the rules that were in force when it was earned.
+	`CREATE INDEX playbook_versions_sha256 ON playbook_versions(sha256)`,
+	// before_text and after_text carry the diff's two sides; BEFORE and AFTER are
+	// SQL keywords.
+	`CREATE TABLE retro_diffs (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		retro_id    INTEGER NOT NULL REFERENCES retros(id) ON DELETE CASCADE,
+		idx         INTEGER NOT NULL,
+		section     TEXT    NOT NULL DEFAULT '',
+		change      TEXT    NOT NULL DEFAULT '',
+		rationale   TEXT    NOT NULL DEFAULT '',
+		before_text TEXT    NOT NULL DEFAULT '',
+		after_text  TEXT    NOT NULL DEFAULT '',
+		applied_at  TEXT,
+		version_id  INTEGER REFERENCES playbook_versions(id)
+	)`,
+	`CREATE UNIQUE INDEX retro_diffs_retro_idx ON retro_diffs(retro_id, idx)`,
+	`CREATE TABLE note_scores (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		briefing_id   INTEGER NOT NULL REFERENCES briefings(id) ON DELETE CASCADE,
+		mode          TEXT    NOT NULL,
+		day           TEXT    NOT NULL,
+		symbol        TEXT    NOT NULL,
+		bias          TEXT    NOT NULL,
+		threshold_pct REAL    NOT NULL DEFAULT 0,
+		scored_at     TEXT    NOT NULL,
+		open          REAL    NOT NULL,
+		close         REAL    NOT NULL,
+		actual_pct    REAL    NOT NULL,
+		correct       INTEGER NOT NULL
+	)`,
+	// One grade per note: a briefing names a symbol once, and it is graded once.
+	`CREATE UNIQUE INDEX note_scores_briefing_symbol ON note_scores(briefing_id, symbol)`,
+	`CREATE INDEX note_scores_mode_day ON note_scores(mode, day)`,
+}
+
+// schemaV6 makes a session's watchlist read gradeable once. A forced re-run
+// archives a second briefing for the day, and the per-briefing index let both be
+// graded; the earliest grade of each symbol is the one that stands.
+var schemaV6 = []string{
+	`DELETE FROM note_scores WHERE id NOT IN (
+		SELECT MIN(id) FROM note_scores GROUP BY mode, day, symbol
+	)`,
+	`CREATE UNIQUE INDEX note_scores_mode_day_symbol ON note_scores(mode, day, symbol)`,
 }
 
 // migrate brings db up to the newest schema version, applying each pending

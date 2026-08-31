@@ -115,7 +115,11 @@ internal/market      read-only data contracts; alpacadata/ reads snapshots, bars
 internal/calendar    scheduled-event contracts; fomc/ fred/ finnhub/ are the sources
 internal/regime      the market label, computed from daily bars by fixed rules
 internal/playbook    reads the strategy file, and writes the seed once
-internal/brief       assembles the briefing, builds the prompt, validates and scores the call
+internal/brief       assembles the briefing, builds the prompt, validates and scores the call,
+                     the watchlist notes, and every decided proposal
+internal/counterfactual  replays one proposal against its session's minute bars
+internal/stats       the report, the ten gate checks, and the null-trader and bootstrap tests
+internal/retro       the weekly review: its prompt, its diff rules, and the atomic apply
 ```
 
 **Go for the tool, Python for research.** Go gives a single static binary, a maintained official
@@ -266,6 +270,77 @@ tomorrow, and it has to be takeable that same evening or the ideas expire unacte
 does not start with `N`. An N-rule is a no-trade condition, so a proposal citing one is arguing for
 the trade its own rule forbids.
 
+### The mirror design
+
+The mirror is where the record stops being a diary. Thirteen decisions carry it, and most of them
+exist because the flattering implementation is also the easy one.
+
+**Every decided idea replays the same way.** Taken, passed, rejected, expired and unfilled all go
+through one simulator, against the same bars, at the levels the model wrote down. A pass and a take
+scored by different machinery cannot be compared, and comparing them is the entire reason the passes
+are journaled.
+
+**The replay's conventions are counted, not buried.** A minute bar reports a high and a low and not
+the order they printed in, so two choices are forced: fill-on-touch, which is optimistic, and
+stop-first on a bar that spans both levels, which is conservative. Both are written down, and the
+number of outcomes the stop-first rule decided is printed beside the numbers it shapes. A convention
+that is not reported is being passed off as a measurement.
+
+**The fill bar can stop the trade out but cannot reach the target.** The stop was live from the
+moment the entry filled; the take-profit was not resting when that minute's high printed. Letting it
+fill would pay the replay for an order nobody had placed.
+
+**A replay that cannot be trusted is skipped, not filed.** No prints, levels that do not describe a
+long trade, or a fill bar opening more than 25% from the proposed entry — the signature of a split
+the feed has since adjusted for. An outcome is written once, so a wrong one is permanent.
+
+**The watchlist notes are graded because one call a day is a sample of one.** Twelve biases a session
+is the only way the model's read reaches a sample size in months instead of years. The call stays the
+headline claim; the notes are what make it a statistic rather than an anecdote.
+
+**The regime cut reads the archived label, never a recomputation.** The classifier is a prior the
+briefing was handed, not a fact about the day. Re-deriving it later would grade the model against a
+label it never saw, and a rule change to the classifier would silently rewrite history. Sessions with
+no archived briefing get their own row instead of being folded into somebody else's.
+
+**A threshold is not a gate; a null trader is.** A profit factor of 1.3 over fifty trades sits
+comfortably inside what a zero-edge trader with the same win and loss sizes produces by chance, so
+`tape stats` simulates ten thousand of him at the record's own sample size and requires that he
+clears the bar rarely. The bootstrap lower bound on expectancy is the same argument applied to the
+mean: the 2.5th percentile of ten thousand resamples has to be above zero, not the point estimate.
+
+**The null draws its sizes from the record, not from its averages.** A profit factor resting on one
+outlier has to be tested against a null that can draw that outlier too, or the test is easier than
+the record it is judging.
+
+**The gate window restarts at the last rule change.** The retro fits the playbook to the record, and
+grading the fit on the record that produced it is in-sample optimisation — the exact control FINSABER
+applied when the LLM timing edge evaporated. The fingerprint covers what changes the meaning of a
+trade (the playbook text, the risk limits, the cost model, the regime symbol, the call threshold, the
+model and provider) and nothing else: a watchlist symbol changes what is looked at, not what a trade
+means. A hand edit of `playbook.md` resets it exactly like an applied diff, because the file is
+hashed rather than trusted.
+
+**Equity and the gate read the whole record; only the description takes a window.** `tape stats
+--month` and `tape gate` must never disagree about the account, the drawdown, or whether the gate is
+open, and a maximum drawdown measured inside a chosen window is not a maximum drawdown.
+
+**The retro edits text, never rules.** A diff is an exact edit inside one named section whose
+`before` appears there exactly once; `## Risk rules` and everything nested under it is refused
+unread. Those numbers are enforced in Go, and a model that can edit them has found a path around
+every guardrail that reads them. New text may not open a section of its own, and a new setup id may
+not collide with one the playbook already defines.
+
+**An empty diff list is a correct answer.** The prompt says so, the schema allows it, and the
+renderer says it out loud. A review that finds nothing in a week of trades is right more often than
+one that finds five things, and a tool that implies otherwise teaches the trader to over-fit.
+
+**Apply is atomic, and what it replaces is kept.** The version row and the mark on every applied diff
+commit in one transaction *before* the file moves; the new playbook is staged beside the old one and
+swapped by rename; the file it replaced goes to `playbook.history/` under the timestamp it stopped
+being in force. A crash the other way round would leave edits that nothing records as landed, and the
+next apply would write them a second time.
+
 ## Phases and the gate
 
 0. **Plumbing — complete.** Config, broker adapter, journal, cost model, LLM layer, manual paper
@@ -274,9 +349,8 @@ the trade its own rule forbids.
    scored call of the day, before any trade proposals exist.
 2. **Co-pilot — complete.** Schema-validated proposals citing the playbook's setup ids, sized in Go,
    `take` and `pass` with reasons, and the rest of the Go-enforced guardrails.
-3. **The mirror — next.** Nightly scoring including counterfactuals, `tape stats`, weekly `tape
-   retro` with playbook diffs. Then the actual experiment: three or more months of real mornings on
-   paper.
+3. **The mirror — complete.** Nightly scoring including counterfactuals, graded watchlist notes,
+   `tape stats` and `tape gate`, and the weekly `tape retro` with reviewed playbook diffs.
 
 Phase 1 contains: a read-only market client over Alpaca's snapshots, daily bars, one-minute
 sessions, screener and news; three calendars (FOMC from a compiled-in table, US economic releases
@@ -301,23 +375,51 @@ Schema version 3 adds the `proposals` and `refusals` tables and `orders.proposal
 the quantity and risk a `--qty` take actually sent, and `orders.parent_order_id`, so a
 one-cancels-other bracket pair counts as one claim on the shares instead of two.
 
+Phase 3 contains: `internal/counterfactual`, which replays one long proposal against its session's
+minute bars under a named set of conventions; the scoring pass in `internal/brief` that replays every
+decided idea and grades every watchlist bias, and the venue calendar that lets a half day grade;
+`internal/stats`, which turns the journal into the report, the ten gate checks, and the null-trader
+and bootstrap tests in `significance.go`; the `playbook_versions` fingerprint that decides which
+sessions the gate is allowed to read; `internal/retro`, its second and larger prompt, its diff rules,
+and an apply that stages, snapshots and commits in one piece; and `tape score`, `tape stats`,
+`tape gate`, `tape retro`, `tape retro show`, `tape retro apply` and `tape playbook versions` around
+them. Schema version 5 adds `proposal_outcomes`, `retros`, `retro_diffs`, `playbook_versions` and
+`note_scores`; version 6 makes a symbol's bias gradeable once per session rather than once per
+briefing, so a forced re-run cannot double-count a read.
+
 What none of it has done is meet reality. Every adapter is tested against a fake HTTP server, the
-briefing and the slate against an in-memory feed, an in-memory venue and a fake model. Nothing here
-has run against a real Alpaca account, a real calendar API, or a real model, so nothing in the
-repository is evidence about how good the reads are — which is the whole reason the call is scored
-rather than shown off.
+briefing, the slate and the review against an in-memory feed, an in-memory venue and a fake model.
+Nothing here has run against a real Alpaca account, a real calendar API, or a real model, so nothing
+in the repository is evidence about how good the reads are — which is the whole reason the call is
+scored rather than shown off. The next step is not a feature. It is three or more months of real
+mornings on paper, and before that, one real end-to-end run against a real Alpaca paper account and a
+real provider to find out what the fakes have been hiding.
 
-Between three and four sits the gate. No real money moves until every box ticks:
+Between three and four sits the gate. No real money moves until every box ticks, and every threshold
+was written down before any results existed:
 
-- Three or more months and fifty or more sessions through the full system
-- Positive expectancy after modeled slippage and commissions
+- Three or more months and fifty or more sessions, counted from the last rule change
+- One hundred or more closed trades
+- Positive expectancy after modeled slippage and commissions, and a bootstrap 95% lower bound on
+  that expectancy that is also above zero
 - Profit factor of 1.3 or better, maximum drawdown of 10% or less
+- A zero-edge trader with the same trade sizes and the same sample size clears those thresholds in at
+  most 10% of ten thousand simulated runs
 - Zero guardrail breaches in the final month
-- The stats identify _which_ playbook rules carry the edge. Funding a mystery is gambling.
+- At least one playbook rule with ten or more trades and positive expectancy. Funding a mystery is
+  gambling.
 
 4. **Real money**, only if the gate opens. A live adapter behind the existing interface, a small
    account, the same guardrails and the same journal. Live results will be worse than paper; the
    gate's margins exist partly to absorb that, and the gate can close again.
+
+**Phase 4 also requires a kill switch written before the first live order.** The gate validates the
+strategy. It cannot validate the trader, because paper money cannot reproduce what a real loss does
+to the person holding it — which is the failure mode the Brazilian data is describing when it reports
+that persistence made outcomes worse. So the conditions under which the live account is closed —
+a drawdown figure, a run of losing weeks, a count of overridden guardrails — get written down and
+committed while nothing is at stake, in the same spirit as the gate itself. A stop-loss decided
+after the loss is not a stop-loss; it is a negotiation.
 
 If the gate never opens, phase four never runs, and the project still did its job.
 

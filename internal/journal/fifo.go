@@ -14,6 +14,9 @@ type lot struct {
 	price        float64
 	costPerShare float64
 	openedAt     time.Time
+	// orderID is the order whose fill opened the lot, so a closed trade can name
+	// the entry it came from.
+	orderID int64
 }
 
 // matchFIFO turns a fill history into completed round trips and whatever is left
@@ -53,6 +56,7 @@ func matchFIFO(fills []Fill) ([]Trade, []OpenPosition) {
 			exitNotional  float64
 			costs         float64
 			openedAt      time.Time
+			entryOrderID  int64
 		)
 		for remaining > 0 && len(lots) > 0 && sign(lots[0].qty) != dir {
 			l := &lots[0]
@@ -62,6 +66,7 @@ func matchFIFO(fills []Fill) ([]Trade, []OpenPosition) {
 			}
 			if closedQty == 0 || l.openedAt.Before(openedAt) {
 				openedAt = l.openedAt
+				entryOrderID = l.orderID
 			}
 			closedQty += take
 			entryNotional += l.price * float64(take)
@@ -89,6 +94,8 @@ func matchFIFO(fills []Fill) ([]Trade, []OpenPosition) {
 				GrossPL:       gross,
 				Costs:         costs,
 				NetPL:         gross - costs,
+				EntryOrderID:  entryOrderID,
+				ExitOrderID:   f.OrderID,
 			})
 		}
 		if remaining > 0 {
@@ -97,6 +104,7 @@ func matchFIFO(fills []Fill) ([]Trade, []OpenPosition) {
 				price:        f.ModeledPrice,
 				costPerShare: costPerShare,
 				openedAt:     f.FilledAt,
+				orderID:      f.OrderID,
 			})
 		}
 		if len(lots) == 0 {

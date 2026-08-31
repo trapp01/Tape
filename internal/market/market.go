@@ -81,12 +81,22 @@ type Session struct {
 	Low    float64
 	Close  float64
 	Volume float64
-	// Complete means the session has run to the bell.
+	// Complete means the session has run to the bell, judged against the fixed
+	// 15:55 ET floor. A caller holding the venue calendar can re-judge it.
 	Complete bool
+	// LastBarAt is when the session's final regular print landed, so an early
+	// close can be told from a session that stopped short.
+	LastBarAt time.Time
 }
 
 type SnapshotProvider interface {
 	Snapshots(ctx context.Context, symbols []string) (map[string]Snapshot, error)
+}
+
+// IntradayProvider returns the regular-hours minute bars of one session, oldest
+// first, so a proposal can be replayed against the path price actually took.
+type IntradayProvider interface {
+	SessionBars(ctx context.Context, symbol, day string) ([]Bar, error)
 }
 
 type SessionProvider interface {

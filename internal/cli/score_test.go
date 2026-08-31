@@ -77,6 +77,40 @@ func TestScoreSkipsASessionThatIsNotFinal(t *testing.T) {
 	}
 }
 
+// --through picks the last session to grade; it does not move the cutoff. Naming
+// today before 16:30 ET would grade a half-built session, permanently.
+func TestScoreThroughCannotReachIntoARunningSession(t *testing.T) {
+	newBriefHome(t)
+	if _, err := run(t, "brief"); err != nil {
+		t.Fatalf("brief: %v", err)
+	}
+
+	for _, day := range []string{briefSession, "2026-08-29"} {
+		_, err := run(t, "score", "--through", day)
+		if err == nil {
+			t.Fatalf("--through %s before the cutoff must be refused", day)
+		}
+		if !strings.Contains(err.Error(), "16:30 ET") {
+			t.Fatalf("refusal for --through %s = %v, want it to name the cutoff", day, err)
+		}
+	}
+
+	// Yesterday is finished whatever time it is now.
+	if _, err := run(t, "score", "--through", "2026-08-27"); err != nil {
+		t.Fatalf("--through a closed session: %v", err)
+	}
+
+	// After the cutoff today is fair game.
+	atClock(t, briefEvening)
+	out, err := run(t, "score", "--through", briefSession)
+	if err != nil {
+		t.Fatalf("--through after the cutoff: %v", err)
+	}
+	if !strings.Contains(out, "actual +0.50%") {
+		t.Fatalf("the call should grade after the cutoff:\n%s", out)
+	}
+}
+
 func TestEODSaysWhenGradesArrive(t *testing.T) {
 	newBriefHome(t)
 	if _, err := run(t, "brief"); err != nil {

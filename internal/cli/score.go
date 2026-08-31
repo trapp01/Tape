@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/trapp01/tape/internal/brief"
+	"github.com/trapp01/tape/internal/broker"
 	"github.com/trapp01/tape/internal/market"
 )
 
@@ -29,8 +30,11 @@ func newScoreCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "score",
-		Short: "Grade the briefing's calls against what the sessions did",
-		Args:  cobra.NoArgs,
+		Short: "Grade the calls, replay the ideas, and grade the watchlist notes",
+		Long: "score settles everything the record is owed for the sessions that have closed:\n" +
+			"the call of the day, the replay of every idea taken or passed on, and the bias\n" +
+			"note on each watchlist symbol. Each of them is graded once.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			a, err := newApp(cmd, "score")
 			if err != nil {
@@ -41,11 +45,11 @@ func newScoreCmd() *cobra.Command {
 			ctx := cmd.Context()
 			if through == "" {
 				through = defaultThroughDay(timeNow())
-			} else if _, err := time.Parse(dayLayout, through); err != nil {
-				return fmt.Errorf("--through %q is not a %s date", through, dayLayout)
+			} else if err := checkThrough(through, timeNow()); err != nil {
+				return err
 			}
 
-			report, err := scoreCalls(ctx, a, through)
+			report, err := scoreDue(ctx, a, through)
 			if err != nil {
 				return err
 			}
@@ -53,15 +57,28 @@ func newScoreCmd() *cobra.Command {
 			return printAccuracy(ctx, a)
 		},
 	}
-	cmd.Flags().StringVar(&through, "through", "", "grade calls filed on or before this day (default: the last closed session)")
+	cmd.Flags().StringVar(&through, "through", "", "grade sessions on or before this day (default: the last closed session)")
 	return cmd
 }
 
 // gradesReady is true once today's session can be read whole. Before the cutoff
-// the feed still returns a half-built session, and a call is graded once.
+// the feed still returns a half-built session, and a grade is written once.
 func gradesReady(now time.Time) bool {
 	et := now.In(market.Eastern())
 	return et.Hour() > gradeHour || (et.Hour() == gradeHour && et.Minute() >= gradeMinute)
+}
+
+// checkThrough refuses a day the venue has not finished. --through chooses the
+// last session to grade; it is not a way past the cutoff, because a grade
+// written from a half-built session is the permanent one.
+func checkThrough(through string, now time.Time) error {
+	if _, err := time.Parse(dayLayout, through); err != nil {
+		return fmt.Errorf("--through %q is not a %s date", through, dayLayout)
+	}
+	if !gradesReady(now) && through >= market.SessionDate(now) {
+		return fmt.Errorf("--through %s covers a session that is still running; %s", through, gradeLater)
+	}
+	return nil
 }
 
 // defaultThroughDay grades today only once today's session is behind us,
@@ -73,17 +90,41 @@ func defaultThroughDay(now time.Time) string {
 	return now.In(market.Eastern()).AddDate(0, 0, -1).Format(market.DayLayout)
 }
 
-// scoreCalls grades every call due through the given day against that session's
-// own open and close.
-func scoreCalls(ctx context.Context, a *app, through string) (brief.ScoreReport, error) {
+// scoreDue runs one scoring pass over everything due through the given day: the
+// calls, the proposal replays, and the watchlist notes.
+func scoreDue(ctx context.Context, a *app, through string) (brief.ScoreReport, error) {
 	feed, err := newMarketFeed(a.cfg)
 	if err != nil {
 		return brief.ScoreReport{}, err
 	}
-	return brief.ScoreDue(ctx, a.jnl, feed, a.cfg.Mode, through)
+	return brief.ScoreDue(ctx, brief.ScoreDeps{
+		Journal:             a.jnl,
+		Sessions:            feed,
+		Intraday:            feed,
+		Calendar:            sessionCalendar(a),
+		Costs:               costModel(a.cfg),
+		Mode:                a.cfg.Mode,
+		DefaultThresholdPct: a.cfg.Brief.CallThresholdPct,
+	}, through)
+}
+
+// sessionCalendar is the venue's own trading calendar when the adapter has one,
+// so a half day grades against the bell it rang. Nil leaves the fixed floor.
+func sessionCalendar(a *app) broker.SessionCalendar {
+	cal, ok := a.broker.(broker.SessionCalendar)
+	if !ok {
+		return nil
+	}
+	return cal
 }
 
 func printScoreReport(a *app, report brief.ScoreReport, through string) {
+	printCalls(a, report, through)
+	printReplays(a, report, through)
+	printNotes(a, report, through)
+}
+
+func printCalls(a *app, report brief.ScoreReport, through string) {
 	fmt.Fprintf(a.out, "\nCalls through %s\n", through)
 	if len(report.Scored) == 0 && len(report.Skipped) == 0 {
 		fmt.Fprintln(a.out, "  nothing left to grade.")
@@ -92,16 +133,54 @@ func printScoreReport(a *app, report brief.ScoreReport, through string) {
 
 	tw := table(a.out)
 	for _, s := range report.Scored {
-		mark := "✗"
-		if s.Outcome.Correct {
-			mark = "✓"
-		}
 		row(tw, "  "+s.Call.Day, s.Call.Instrument, callPhraseShort(s.Call.Direction, s.Outcome.ThresholdPct),
-			"actual "+percent(s.Outcome.ActualPct), a.style.pl(boolSign(s.Outcome.Correct), mark))
+			"actual "+percent(s.Outcome.ActualPct), a.style.pl(boolSign(s.Outcome.Correct), mark(s.Outcome.Correct)))
 	}
 	tw.Flush()
 
 	for _, skipped := range report.Skipped {
+		fmt.Fprintf(a.out, "  not graded: %s\n", skipped)
+	}
+}
+
+// printReplays shows what each decided idea would have done at its own levels,
+// which is what makes a pass measurable rather than an opinion.
+func printReplays(a *app, report brief.ScoreReport, through string) {
+	if len(report.Outcomes) == 0 && len(report.OutcomesSkipped) == 0 {
+		return
+	}
+	fmt.Fprintf(a.out, "\nReplays through %s\n", through)
+
+	tw := table(a.out)
+	for _, o := range report.Outcomes {
+		net := "-"
+		if o.Outcome.Filled {
+			net = fmt.Sprintf("%s  %+.2fR", signedMoney(o.Outcome.NetPL), o.Outcome.RMultiple)
+		}
+		row(tw, "  "+o.Proposal.Day, fmt.Sprintf("#%d %s", o.Proposal.Index, o.Proposal.Symbol),
+			o.Proposal.SetupID, o.Proposal.Status, exitPhrase(o.Outcome), a.style.pl(o.Outcome.NetPL, net))
+	}
+	tw.Flush()
+
+	for _, skipped := range report.OutcomesSkipped {
+		fmt.Fprintf(a.out, "  not replayed: %s\n", skipped)
+	}
+}
+
+func printNotes(a *app, report brief.ScoreReport, through string) {
+	if len(report.Notes) == 0 && len(report.NotesSkipped) == 0 {
+		return
+	}
+	fmt.Fprintf(a.out, "\nNotes through %s\n", through)
+
+	tw := table(a.out)
+	for _, n := range report.Notes {
+		row(tw, "  "+n.Score.Day, n.Score.Symbol, n.Score.Bias,
+			"actual "+percent(n.Score.ActualPct), a.style.pl(boolSign(n.Score.Correct), mark(n.Score.Correct)))
+	}
+	tw.Flush()
+
+	for _, skipped := range report.NotesSkipped {
 		fmt.Fprintf(a.out, "  not graded: %s\n", skipped)
 	}
 }
@@ -137,4 +216,11 @@ func boolSign(correct bool) float64 {
 		return 1
 	}
 	return -1
+}
+
+func mark(correct bool) string {
+	if correct {
+		return "✓"
+	}
+	return "✗"
 }

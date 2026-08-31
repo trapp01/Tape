@@ -116,9 +116,9 @@ func printRecap(a *app, recap journal.DayRecap, refusals int) error {
 	return tw.Flush()
 }
 
-// scoreToday grades the morning's call now that the session is over. It cannot
-// fail the command: eod exists to end the day flat, and an ungraded call is a
-// line to read, not a reason to stop.
+// scoreToday settles the day now that the session is over: the call, the replays,
+// and the notes. It cannot fail the command — eod exists to end the day flat, and
+// an ungraded record is a line to read, not a reason to stop.
 func scoreToday(ctx context.Context, a *app) {
 	now := timeNow()
 	if !gradesReady(now) {
@@ -126,7 +126,7 @@ func scoreToday(ctx context.Context, a *app) {
 		return
 	}
 	through := defaultThroughDay(now)
-	report, err := scoreCalls(ctx, a, through)
+	report, err := scoreDue(ctx, a, through)
 	if err != nil {
 		fmt.Fprintf(a.out, "\nCall\n  not graded: %v\n", err)
 		return

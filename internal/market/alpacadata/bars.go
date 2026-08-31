@@ -38,6 +38,11 @@ func (c *Client) DailyBars(ctx context.Context, symbol string, days int) ([]mark
 	if len(raw) > days {
 		raw = raw[len(raw)-days:]
 	}
+	return toBars(raw), nil
+}
+
+// toBars maps the venue's candles onto tape's, keeping the order they arrived in.
+func toBars(raw []marketdata.Bar) []market.Bar {
 	out := make([]market.Bar, 0, len(raw))
 	for _, b := range raw {
 		out = append(out, market.Bar{
@@ -49,7 +54,7 @@ func (c *Client) DailyBars(ctx context.Context, symbol string, days int) ([]mark
 			Volume: float64(b.Volume),
 		})
 	}
-	return out, nil
+	return out
 }
 
 // calendarSpan is how far back to ask for `days` sessions. Weekends cost two days

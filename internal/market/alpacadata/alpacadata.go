@@ -26,6 +26,7 @@ var (
 	_ market.SnapshotProvider = (*Client)(nil)
 	_ market.BarsProvider     = (*Client)(nil)
 	_ market.SessionProvider  = (*Client)(nil)
+	_ market.IntradayProvider = (*Client)(nil)
 	_ market.MoversProvider   = (*Client)(nil)
 	_ market.NewsProvider     = (*Client)(nil)
 )

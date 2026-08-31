@@ -13,8 +13,9 @@ import (
 )
 
 var (
-	_ broker.Broker     = (*Broker)(nil)
-	_ broker.MarketData = (*Broker)(nil)
+	_ broker.Broker          = (*Broker)(nil)
+	_ broker.MarketData      = (*Broker)(nil)
+	_ broker.SessionCalendar = (*Broker)(nil)
 )
 
 type position struct {
@@ -33,6 +34,8 @@ type Broker struct {
 	// legs maps an entry order to its bracket children; parentOf is the reverse.
 	legs     map[string][]string
 	parentOf map[string]string
+	// sessions is the venue calendar, keyed by session date.
+	sessions map[string]hours
 
 	// DefaultPrice prices any symbol SetPrice was not called for.
 	DefaultPrice float64
@@ -59,6 +62,7 @@ func New() *Broker {
 		held:         map[string]*position{},
 		legs:         map[string][]string{},
 		parentOf:     map[string]string{},
+		sessions:     map[string]hours{},
 		DefaultPrice: 100,
 		Spread:       0.02,
 		Equity:       100000,
