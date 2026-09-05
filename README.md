@@ -39,8 +39,11 @@ variable, or config value changes that.
 
 I wanted to find out whether I could trade, and I wanted the answer to be a number rather than a
 feeling. The obvious way to get there is to point a good model at the market every morning and ask
-what to buy — treat the AI as the best information collector I could afford. That was roughly my
-premise going in. It stops working the moment you ask what you would do with the answer:
+what to buy — treat the AI as the best information collector I could afford. That was my premise
+going in, and this repo is an experiment that is still running.
+
+The premise did not survive the research Claude did before anything was built. It stops working
+the moment you ask what you would do with the answer:
 
 - If it says buy NVDA and NVDA goes up, was the model right, or was the whole market up that day?
 - When a trade loses, was it the thesis, the entry, the size, or the fill?
@@ -51,18 +54,33 @@ premise going in. It stops working the moment you ask what you would do with the
 
 Not one of those is answerable by a better model. Every one of them is answerable by a record —
 provided the record includes the trades you didn't take, and prices the ones you did the way a real
-broker would. So I inverted it: **the journal is the product, and the model is a component that
-gets graded like everything else in it.**
+broker would. So the design inverts it: **the journal is the product, and the model is a component
+that gets graded like everything else in it.**
 
 That inversion is what makes an LLM safe to have here at all. It is not being asked for an edge it
 has no demonstrated claim to. It is being asked to apply rules I wrote, cite which rule it applied,
 and make calls specific enough to be scored wrong.
 
+## How it was built
+
+The split is the one in
+[Getting Out of the AI's Way](https://matt-trapp.com/posts/getting-out-of-the-ais-way/). Four
+things are mine: the goal above, the playbook, the ledger that starts at $5,000 rather than
+Alpaca's $100,000, and the gate — paper only until a bar written down in advance opens. Claude did
+the research the next section summarises, wrote [docs/DESIGN.md](docs/DESIGN.md) off what it found
+and its own [CLAUDE.md](CLAUDE.md) off that, and made the engineering decisions: the journal as the
+source of truth, the cost model, the guardrails in Go, the provider layer, the replay conventions,
+and the statistics behind the gate. A supervising agent with parallel subagents built the packages
+against frozen contracts. I review every diff, and nothing is committed until I have read it.
+
+Where this README explains why something is built the way it is, that is Claude's reasoning, kept
+as written, unless it says otherwise.
+
 ## Influences
 
 **Gary Stevenson's _The Trading Game_ — the origin, and not the lesson I went in for.** I read it
 and came away thinking trading was an information problem, which is what sent me looking for a tool
-that collects information faster. The research killed that idea: retail cannot win on speed, since
+that collects information faster. The research Claude dug up killed that idea: retail cannot win on speed, since
 firms hold co-located servers and, through
 [payment for order flow](https://en.wikipedia.org/wiki/Payment_for_order_flow), wholesalers see
 retail orders before the market does. What survives from the book is duller and better. Stevenson's
@@ -181,11 +199,13 @@ model's JSON.
 
 ## Why it's built this way
 
-Each of these is a decision with a consequence, in the order they were made.
+Each of these is a decision with a consequence, in the order they were made. They are Claude's,
+except where marked.
 
 **The journal is the source of truth, not the broker.** Every stat comes out of SQLite and is then
 decorated with live broker data, never the reverse. `Ledger` starts at the `starting_equity` in
-config and computes cash and P&L from tape's own fills. Alpaca hands out $100,000 of paper money,
+config and computes cash and P&L from tape's own fills. The starting balance is my call: Alpaca
+hands out $100,000 of paper money,
 which tells you nothing about how you would behave with an account you could actually fund, so that
 balance is printed once under a heading that says `(ignored by stats)` and used for nothing. The
 consequence: the numbers you judge yourself on survive changing brokers, and they are the numbers
@@ -1419,7 +1439,7 @@ results will be worse than paper, the gate's margins exist partly to absorb that
 close again.
 
 If the gate never opens, phase four never runs, and the project still did its job. The full
-reasoning, the evidence behind each decision, and what I cut are in
+reasoning, the evidence behind each decision, and what Claude cut are in
 [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Status
@@ -1461,7 +1481,8 @@ finding out now exists; none of the answers do.
 I'm open-sourcing it at this stage because the interesting part is not the trading. It is that the
 honest version of this tool — cost-modeled fills, a ledger that ignores the broker, limits in
 compiled code, and a gate whose criteria were fixed before any results existed — is a specific and
-mostly unglamorous set of engineering decisions, and they are all readable in one afternoon.
+mostly unglamorous set of engineering decisions, most of them Claude's, and they are all readable
+in one afternoon.
 
 ## License
 
