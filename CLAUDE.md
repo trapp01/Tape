@@ -244,6 +244,7 @@ internal/costs/      slippage + commission + fee model applied to every fill
 internal/llm/        Provider contract, anthropic.go, openai.go (compatible client), presets
 internal/trading/    orchestration + the Go-enforced rules (Submit, Sync, Flatten, Positions)
 docs/DESIGN.md       the public design document: evidence, decisions, phases, the gate
+docs/guide.md        what each command does and prints: briefing, slate, guardrails, scoring, config
 docs/models.md       model recommendations per provider
 ```
 
